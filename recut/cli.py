@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import platform
 
 from .pipeline import PipelineConfig, align, render_from_alignment
 
@@ -12,7 +13,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--src", type=Path, required=True, help="高清母帶影片路徑")
     p.add_argument("--out", type=Path, default=Path("out"), help="輸出資料夾")
     p.add_argument("--step", type=float, default=0.2, help="取樣間隔（秒）")
-    p.add_argument("--feature", choices=["auto", "clip", "hsv"], default="clip", help="特徵方法")
+    p.add_argument("--feature", choices=["clip"], default="clip", help="特徵方法（僅支援 clip）")
     p.add_argument("--search-margin", type=float, default=30.0, help="每段搜尋範圍（秒）")
     p.add_argument("--dtw-window", type=int, default=0, help="DTW 視窗（0 表示自動）")
     p.add_argument("--global-search", action="store_true", help="非順序對齊：在整個母帶全域搜尋")
@@ -24,7 +25,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--min-shot", dest="min_shot", type=float, default=0.10, help="最短鏡頭長度（秒）")
     p.add_argument("--refine-boundaries", action="store_true", help="啟用邊界幀級精修")
     p.add_argument("--refine-window", type=float, default=0.5, help="精修視窗（秒）")
-    p.add_argument("--refine-metric", choices=["auto", "clip", "hsv"], default="auto", help="精修用特徵")
+    p.add_argument("--refine-metric", choices=["clip"], default="clip", help="精修用特徵（僅支援 clip）")
     p.add_argument("--resume", action="store_true", help="中斷後續跑已完成的鏡頭")
     p.add_argument("--slow-processor", action="store_true", help="停用 CLIP fast 影像處理器（較慢）")
     p.add_argument("--no-cache", action="store_true", help="停用母帶特徵快取")
@@ -33,7 +34,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--from-alignment", action="store_true", help="跳過對齊，直接讀取 out/alignment.json 進行合成")
     p.add_argument("--alignment", type=Path, default=None, help="指定 alignment.json 路徑（優先於 --from-alignment）")
     # 編碼相關
-    p.add_argument("--vcodec", choices=["libx264", "h264_videotoolbox"], default="h264_videotoolbox", help="視訊編碼器（libx264=CPU, h264_videotoolbox=硬體加速）")
+    sysname = platform.system().lower()
+    default_vcodec = "h264_videotoolbox" if sysname == "darwin" else ("h264_nvenc" if sysname.startswith("win") else "h264_videotoolbox")
+    p.add_argument(
+        "--vcodec",
+        choices=["h264_videotoolbox", "h264_nvenc"],
+        default=default_vcodec,
+        help="視訊編碼器（Windows: h264_nvenc, macOS: h264_videotoolbox）",
+    )
     p.add_argument("--crf", type=int, default=18, help="CRF 品質（libx264 適用）")
     p.add_argument("--preset", type=str, default="veryfast", help="x264 編碼預設檔（ultrafast..veryslow，libx264 適用）")
     p.add_argument("--vbitrate", type=str, default=None, help="視訊位元率（h264_videotoolbox 建議設置，例如 5M）")

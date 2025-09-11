@@ -76,9 +76,11 @@
 1. 建議使用 Python 3.10+ 與虛擬環境。
 2. 安裝必要依賴（OpenCV、NumPy、tqdm）：
    - `pip install -r requirements.txt`
-3. 若要使用 CLIP 特徵（更穩定），請另外安裝：
-   - `pip install torch torchvision transformers`
-   首次執行會自動下載模型（需網路）。
+3. 本專案僅支援 CLIP 特徵（必須）：
+   - CPU：`pip install torch torchvision transformers`（僅做驗證，不建議大量運算）
+   - Windows + NVIDIA GPU（建議）：安裝對應 CUDA 的 PyTorch（例 CUDA 12.x：`pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision`），再安裝 `transformers`。
+   - macOS Apple Silicon：已支援 PyTorch MPS（Apple GPU）。請安裝官方 PyTorch 與 transformers；程式會自動偵測並使用 `mps` 裝置。
+   首次執行會下載模型（需網路），缺失將直接報錯不退回。
 4. 建議安裝 PySceneDetect（更準確場景偵測）：
    - `pip install scenedetect`
 
@@ -108,6 +110,55 @@
 
 ### 實作備註
 
-- 若有安裝 `PySceneDetect`，系統會自動使用其 `ContentDetector` 進行場景偵測；否則退回內建 HSV 差異法。
+- 場景偵測僅支援 `PySceneDetect` 的 `ContentDetector`；未安裝或偵測不到分鏡將報錯，不退回 HSV。
 - 文字/水印遮罩（EAST）需要額外的模型檔，程式已預留接點，未提供權重檔；一般情況下也可直接略過遮罩（用 CLIP 或 HSV 直方圖仍有一定魯棒性）。
 - DTW 目前以單調遞增方式逐段搜尋，對一般碎剪（順序未被打亂）有良好效果；若遇到倒序/交叉剪，可手動放寬搜尋範圍或降低 `--step` 增加取樣密度。
+
+---
+
+## Windows 加速與安裝指引（RTX 50xx 支援）
+
+本專案僅支援硬體加速編解碼：
+
+- Windows：使用 `h264_nvenc`（NVENC + CUDA）
+- macOS：使用 `h264_videotoolbox`（VideoToolbox）
+- 其他平台目前不支援（將報錯）
+同時，CLIP 特徵在 GPU 上自動啟用半精度（AMP）與批次推理。
+
+### 必要條件（只需設定一次）
+
+1. 安裝 NVIDIA 顯示卡驅動（支援 RTX 50xx）。
+2. 安裝 CUDA 對應版 PyTorch（建議 CUDA 12.x）：
+   - 於 PowerShell（或 CMD）執行 PyTorch 官網提供的 pip 指令（例如 `cu121`）。
+   - 之後 `pip install transformers`。
+3. 安裝 ffmpeg 並加入 PATH（必須，且需包含對應硬體編碼器）：
+   - 方式 A（建議）：使用 winget：`winget install Gyan.FFmpeg` 或從 gyan.dev 下載 release zip，解壓後將 `bin` 資料夾加入 PATH。
+   - 驗證：在新開的 PowerShell 執行 `ffmpeg -hide_banner`，能顯示版本資訊即可。
+
+### 建議檢查
+
+- 檢查 PyTorch 是否啟用 CUDA：在 Python 互動殼執行 `import torch; print(torch.cuda.is_available())` 應為 `True`。
+- 檢查 ffmpeg NVENC/VTB 支援：
+  - Windows：`ffmpeg -encoders | findstr nvenc` 應列出 `h264_nvenc`。
+  - macOS：`ffmpeg -encoders | grep videotoolbox` 應列出 `h264_videotoolbox`。
+
+### Windows 使用小叮嚀
+
+- 本專案僅允許硬體編碼：Windows=`h264_nvenc`，macOS=`h264_videotoolbox`。若選其他將報錯。
+- 若遇到「裁切速度慢」且 GPU 空轉，可確認：
+  - `ffmpeg` 版本是否含 NVENC；
+  - 顯卡驅動是否最新；
+  - 源檔是否使用了少見編碼導致回退軟解（可嘗試加 `--fast-copy` 快速裁切測試）。
+- 首次跑 CLIP 模型會下載權重，若在離線環境請事先在可連網機器下載後複製到 `~/.cache/huggingface/`（或設定 `HF_HOME`）。
+
+### 你需要手動做的一次性步驟（Windows）
+
+- 安裝 GPU 版 PyTorch（對應 CUDA 版本）與 transformers。
+- 安裝 ffmpeg 並確保 PATH 正確。
+- 更新 NVIDIA 驅動至支援你的 RTX 50xx 的最新版本。
+
+完成以上後，直接使用：
+
+`python -m recut.cli --ref ref.mp4 --src src.mp4 --out out --render`
+
+或 GUI：`python -m recut.ui_tk`

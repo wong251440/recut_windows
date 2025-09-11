@@ -2,8 +2,10 @@ numpy
 opencv-python
 tqdm
 
-# Optional (for better matching)
+# Required for scene detection
+scenedetect
+
+# CLIP (required at runtime). 安裝方式請依平台參考 README：
 # torch
 # torchvision
 # transformers
-# scenedetect

@@ -4,6 +4,7 @@ import threading
 import traceback
 import json
 from pathlib import Path
+import platform
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
@@ -44,7 +45,9 @@ class App(tk.Tk):
         self.fastcopy_var = tk.BooleanVar(value=False)
         self.from_align_var = tk.BooleanVar(value=False)
         # 編碼選項
-        self.vcodec_var = tk.StringVar(value="h264_videotoolbox")
+        sysname = platform.system().lower()
+        default_vcodec = "h264_videotoolbox" if sysname == "darwin" else ("h264_nvenc" if sysname.startswith("win") else "libx264")
+        self.vcodec_var = tk.StringVar(value=default_vcodec)
         self.crf_var = tk.IntVar(value=18)
         self.preset_var = tk.StringVar(value="veryfast")
         self.vbitrate_var = tk.StringVar(value="5M")
@@ -66,7 +69,7 @@ class App(tk.Tk):
             grid.columnconfigure(col * 2 + 1, weight=1)
 
         add_field(0, "取樣步長(s)", ttk.Entry(grid, textvariable=self.step_var, width=8))
-        feat = ttk.Combobox(grid, textvariable=self.feature_var, values=["auto", "clip", "hsv"], width=8, state="readonly")
+        feat = ttk.Combobox(grid, textvariable=self.feature_var, values=["clip"], width=8, state="readonly")
         add_field(1, "特徵", feat)
         add_field(2, "搜尋範圍(s)", ttk.Entry(grid, textvariable=self.margin_var, width=8))
         add_field(3, "DTW 視窗", ttk.Entry(grid, textvariable=self.dtw_var, width=8))
@@ -99,7 +102,8 @@ class App(tk.Tk):
         ttk.Label(rowrf, text="精修視窗(秒)").grid(row=0, column=0, sticky=tk.W)
         ttk.Entry(rowrf, textvariable=self.refine_window_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=6)
         ttk.Label(rowrf, text="精修特徵").grid(row=0, column=2, sticky=tk.W)
-        ttk.Combobox(rowrf, textvariable=self.refine_metric_var, values=["auto","clip","hsv"], width=8, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=6)
+        self.refine_metric_var.set("clip")
+        ttk.Combobox(rowrf, textvariable=self.refine_metric_var, values=["clip"], width=8, state="readonly").grid(row=0, column=3, sticky=tk.W, padx=6)
 
         # 編碼參數區
         enc = ttk.LabelFrame(frm, text="輸出編碼")
@@ -107,16 +111,12 @@ class App(tk.Tk):
         rowe = ttk.Frame(enc)
         rowe.pack(fill=tk.X, **pad)
         ttk.Label(rowe, text="視訊編碼").grid(row=0, column=0, sticky=tk.W)
-        vb = ttk.Combobox(rowe, textvariable=self.vcodec_var, values=["libx264", "h264_videotoolbox"], width=16, state="readonly")
+        vb = ttk.Combobox(rowe, textvariable=self.vcodec_var, values=["h264_videotoolbox", "h264_nvenc"], width=16, state="readonly")
         vb.grid(row=0, column=1, sticky=tk.W, padx=6)
-        ttk.Label(rowe, text="CRF (x264)").grid(row=0, column=2, sticky=tk.W)
-        ttk.Entry(rowe, textvariable=self.crf_var, width=6).grid(row=0, column=3, sticky=tk.W, padx=6)
-        ttk.Label(rowe, text="preset (x264)").grid(row=0, column=4, sticky=tk.W)
-        ttk.Entry(rowe, textvariable=self.preset_var, width=10).grid(row=0, column=5, sticky=tk.W, padx=6)
-        ttk.Label(rowe, text="V bitrate (VT)").grid(row=0, column=6, sticky=tk.W)
-        ttk.Entry(rowe, textvariable=self.vbitrate_var, width=8).grid(row=0, column=7, sticky=tk.W, padx=6)
-        ttk.Label(rowe, text="A bitrate").grid(row=0, column=8, sticky=tk.W)
-        ttk.Entry(rowe, textvariable=self.abitrate_var, width=8).grid(row=0, column=9, sticky=tk.W, padx=6)
+        ttk.Label(rowe, text="V bitrate (HW)").grid(row=0, column=2, sticky=tk.W)
+        ttk.Entry(rowe, textvariable=self.vbitrate_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=6)
+        ttk.Label(rowe, text="A bitrate").grid(row=0, column=4, sticky=tk.W)
+        ttk.Entry(rowe, textvariable=self.abitrate_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
         ttk.Checkbutton(enc, text="合併時完全 copy（可能 DTS 警告/長度漂移）", variable=self.concat_copy_var).pack(anchor=tk.W, padx=8)
 
         adv = ttk.LabelFrame(frm, text="全域搜尋參數")

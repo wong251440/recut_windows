@@ -19,7 +19,7 @@ from .scene_detect import Shot, detect_shots_auto
 @dataclass
 class PipelineConfig:
     sample_step: float = 0.2  # seconds (default tuned for tight jump cuts)
-    feature_method: str = "clip"  # clip | hsv | auto
+    feature_method: str = "clip"  # 僅允許 clip
     east_model_path: Optional[str] = None
     search_margin: float = 30.0  # seconds around last match
     dtw_window: int | None = None
@@ -34,7 +34,7 @@ class PipelineConfig:
     # 邊界精修
     refine_boundaries: bool = True
     refine_window: float = 0.5
-    refine_metric: str = "auto"  # auto|clip|hsv
+    refine_metric: str = "clip"  # 僅允許 clip
     cache_source_features: bool = True
 
 
@@ -57,12 +57,9 @@ def _source_cache_path(out_dir: Path, source_video: Path, cfg: PipelineConfig) -
 
 
 def detect_shots(reference_video: Path, cfg: PipelineConfig) -> List[Shot]:
-    # Try PySceneDetect with provided sensitivity, fallback otherwise
-    try:
-        from .scene_detect import pyscenedetect
-        return pyscenedetect(reference_video, threshold=(cfg.sc_threshold or 27.0), min_scene_len=cfg.min_scene_len)
-    except Exception:
-        return detect_shots_auto(reference_video)
+    # 僅允許 PySceneDetect，失敗則拋錯
+    from .scene_detect import pyscenedetect
+    return pyscenedetect(reference_video, threshold=(cfg.sc_threshold or 27.0), min_scene_len=cfg.min_scene_len)
 
 
 def align(
@@ -93,6 +90,15 @@ def align(
     src_times = list(np.arange(0, max(1e-6, src_dur), cfg.sample_step).astype(float))
     cache_path = _source_cache_path(out_dir, source_video, cfg)
     src_feats: np.ndarray
+    # 進度回報器（每+5%列印一次）
+    def _src_prog(done: int, total: int) -> None:
+        if not log:
+            return
+        pct = int(done * 100 / max(1, total))
+        last = getattr(_src_prog, "_last", -1)
+        if pct - last >= 1 or pct == 100:
+            _src_prog._last = pct  # type: ignore[attr-defined]
+            log(f"母帶特徵抽取進度：{pct}% ({done}/{total})")
     if cfg.cache_source_features and cache_path.exists():
         try:
             data = np.load(cache_path)
@@ -109,7 +115,8 @@ def align(
             src_feats = extract_sequence_features(
                 source_video,
                 src_times,
-                FeatureConfig(method=cfg.feature_method, use_fast_processor=cfg.use_fast_processor),
+                FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor),
+                on_progress=_src_prog,
             )
             if cfg.cache_source_features:
                 try:
@@ -125,7 +132,8 @@ def align(
         src_feats = extract_sequence_features(
             source_video,
             src_times,
-            FeatureConfig(method=cfg.feature_method, use_fast_processor=cfg.use_fast_processor),
+            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor),
+            on_progress=_src_prog,
         )
         if cfg.cache_source_features:
             try:
@@ -169,7 +177,7 @@ def align(
         ref_feats = extract_sequence_features(
             reference_video,
             ref_times,
-            FeatureConfig(method=cfg.feature_method, use_fast_processor=cfg.use_fast_processor),
+            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor),
         )
 
         if cfg.global_search:
@@ -233,7 +241,7 @@ def align(
             source_video,
             result["matches"],
             window=cfg.refine_window,
-            method=(cfg.refine_metric if cfg.refine_metric != "auto" else ("clip" if cfg.feature_method == "clip" else "hsv")),
+            method="clip",
             use_fast=cfg.use_fast_processor,
             log=log,
         )
@@ -253,7 +261,7 @@ def _refine_boundaries(
     matches: List[Dict],
     *,
     window: float = 0.5,
-    method: str = "hsv",
+    method: str = "clip",
     use_fast: bool = True,
     log: Optional[callable] = None,
 ) -> List[Dict]:
@@ -261,14 +269,16 @@ def _refine_boundaries(
     fps_ref = max(30.0, video_fps(ref_video))
     fps_src = max(30.0, video_fps(src_video))
     step = 1.0 / max(30.0, min(fps_ref, fps_src))  # ~1/30s granularity
-    ref_extractor_cfg = FeatureConfig(method=method, use_fast_processor=use_fast)
-    src_extractor_cfg = FeatureConfig(method=method, use_fast_processor=use_fast)
+    if method != "clip":
+        raise RuntimeError("Boundary refinement only supports 'clip' features.")
+    ref_extractor_cfg = FeatureConfig(method="clip", use_fast_processor=use_fast)
+    src_extractor_cfg = FeatureConfig(method="clip", use_fast_processor=use_fast)
 
     def best_offset(t_ref: float, t_src0: float) -> float:
         # Sample candidate times around t_src0 and pick min cosine distance
         from .features import load_frame_at, build_extractor
         import numpy as np
-        extractor = build_extractor(method, use_fast)
+        extractor = build_extractor("clip", use_fast)
         ref_frame = load_frame_at(ref_video, max(0.0, t_ref))
         if ref_frame is None:
             return t_src0

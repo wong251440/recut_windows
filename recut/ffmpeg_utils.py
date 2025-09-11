@@ -1,4 +1,5 @@
 import subprocess
+import platform
 from pathlib import Path
 from typing import List, Tuple, Optional
 
@@ -41,6 +42,9 @@ def cut_segment(
     abitrate: str = "192k",
 ) -> int:
     duration = max(0.0, end - start)
+    sysname = platform.system().lower()
+    is_windows = sysname.startswith("win")
+    is_macos = sysname == "darwin"
     if not accurate:
         # 快速但不精準（可能因 keyframe 導致段長累積誤差）
         cmd = [
@@ -72,8 +76,17 @@ def cut_segment(
         "-muxdelay",
         "0",
     ]
+    # 強制要求硬體加速編解碼（Windows: NVENC/CUDA, macOS: VideoToolbox）
+    if is_windows and vcodec == "h264_nvenc":
+        cmd = ["-hwaccel", "cuda", *cmd]
+    elif is_macos and vcodec == "h264_videotoolbox":
+        cmd = ["-hwaccel", "videotoolbox", *cmd]
+    else:
+        raise RuntimeError(
+            f"Hardware video codec required. Use 'h264_nvenc' on Windows or 'h264_videotoolbox' on macOS. Got: {vcodec}"
+        )
     # Video encode options
-    if vcodec == "h264_videotoolbox":
+    if vcodec in ("h264_videotoolbox", "h264_nvenc"):
         cmd += [
             "-c:v",
             vcodec,
@@ -83,14 +96,8 @@ def cut_segment(
         if vbitrate:
             cmd += ["-b:v", vbitrate]
     else:
-        cmd += [
-            "-c:v",
-            vcodec,
-            "-crf",
-            str(crf),
-            "-preset",
-            preset,
-        ]
+        # 不允許軟體編碼
+        raise RuntimeError("Software video encode is disabled; hardware codec required.")
     # Audio encode options
     cmd += [
         "-c:a",
