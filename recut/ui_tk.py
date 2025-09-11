@@ -20,8 +20,41 @@ class App(tk.Tk):
         self.geometry("720x520")
 
         pad = {"padx": 8, "pady": 6}
-        frm = ttk.Frame(self)
-        frm.pack(fill=tk.BOTH, expand=True)
+
+        # 建立可滾動容器（Canvas + Scrollbar）
+        container = ttk.Frame(self)
+        container.pack(fill=tk.BOTH, expand=True)
+        canvas = tk.Canvas(container, highlightthickness=0)
+        vscroll = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        frm = ttk.Frame(canvas)
+        frm_id = canvas.create_window((0, 0), window=frm, anchor="nw")
+
+        def _on_configure(event=None):
+            # 更新滾動區域
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            # 自動調整內框寬度以填滿
+            canvas.itemconfigure(frm_id, width=canvas.winfo_width())
+
+        frm.bind("<Configure>", _on_configure)
+        canvas.bind("<Configure>", _on_configure)
+
+        # 滑鼠滾輪支援
+        def _on_mousewheel(event):
+            delta = 0
+            if hasattr(event, 'delta') and event.delta:
+                delta = int(-event.delta / 120)
+            elif hasattr(event, 'num') and event.num in (4, 5):
+                delta = -1 if event.num == 4 else 1
+            if delta:
+                canvas.yview_scroll(delta, "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)      # Windows/macOS
+        canvas.bind_all("<Button-4>", _on_mousewheel)        # Linux
+        canvas.bind_all("<Button-5>", _on_mousewheel)
 
         # Paths
         self.ref_var = tk.StringVar()
