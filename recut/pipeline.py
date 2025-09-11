@@ -330,6 +330,7 @@ def render_from_alignment(
     abitrate: str = "192k",
     force_ref_durations: bool = True,
     stabilize_audio: bool = True,
+    concat_duration_mode: str = "ref",  # ref | none | actual
 ) -> Path:
     ensure_dir(out_dir)
     tmp_dir = out_dir / "segments"
@@ -360,10 +361,26 @@ def render_from_alignment(
             abitrate=abitrate,
         )
         out_files.append(out_file)
+        # 暫時記錄參照長度（若使用 ref 模式）；其他模式稍後覆寫
         durations.append(max(0.0, src_end - src_start))
 
     concat_txt = out_dir / "concat.txt"
-    write_concat_file(out_files, concat_txt, durations=durations)
+    # 根據合併長度模式決定是否與如何寫入 duration
+    if concat_duration_mode == "none":
+        write_concat_file(out_files, concat_txt, durations=None)
+    elif concat_duration_mode == "actual":
+        # 以實際輸出片段的幀數/長度計算 duration，避免與參照不一致造成段邊界偏移
+        actual: List[float] = []
+        for p in out_files:
+            try:
+                d = video_duration(p)
+            except Exception:
+                d = 0.0
+            actual.append(max(0.0, float(d)))
+        write_concat_file(out_files, concat_txt, durations=actual)
+    else:
+        # 預設 ref：沿用參照段長
+        write_concat_file(out_files, concat_txt, durations=durations)
     final_out = out_dir / "recut_output.mp4"
     if run:
         total_ref = float(sum(durations)) if durations else None

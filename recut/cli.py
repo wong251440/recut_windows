@@ -51,6 +51,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vbitrate", type=str, default=None, help="視訊位元率（h264_videotoolbox 建議設置，例如 5M）")
     p.add_argument("--abitrate", type=str, default="192k", help="音訊位元率")
     p.add_argument("--concat-copy", action="store_true", help="合併時完全 copy（不重編音訊）；可能出現 DTS 警告/長度漂移")
+    p.add_argument(
+        "--concat-duration",
+        choices=["ref", "none", "actual"],
+        default="ref",
+        help="合併時段長模式：ref=依參照段長鎖定、none=不鎖定、actual=以實際幀數/長度鎖定",
+    )
     return p.parse_args()
 
 
@@ -93,6 +99,7 @@ def main() -> None:
             vbitrate=args.vbitrate,
             abitrate=args.abitrate,
             stabilize_audio=not args.concat_copy,
+            concat_duration_mode=args.concat_duration,
         )
         print(f"已輸出影片：{final_out.as_posix()}")
         if args.export_xml:
@@ -133,6 +140,7 @@ def main() -> None:
         vbitrate=args.vbitrate,
         abitrate=args.abitrate,
         stabilize_audio=not args.concat_copy,
+        concat_duration_mode=args.concat_duration,
     )
     print(f"完成。對齊結果：{(args.out / 'alignment.json').as_posix()}")
     if args.render:

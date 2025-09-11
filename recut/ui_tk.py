@@ -92,6 +92,7 @@ class App(tk.Tk):
         self.vbitrate_var = tk.StringVar(value="5M")
         self.abitrate_var = tk.StringVar(value="192k")
         self.concat_copy_var = tk.BooleanVar(value=False)
+        self.concat_duration_var = tk.StringVar(value="ref")  # ref | none | actual
         # Scene detect & refine
         self.sc_threshold_var = tk.DoubleVar(value=18.0)
         self.min_shot_var = tk.DoubleVar(value=0.10)
@@ -167,6 +168,10 @@ class App(tk.Tk):
         ttk.Label(rowe, text="A bitrate").grid(row=0, column=4, sticky=tk.W)
         ttk.Entry(rowe, textvariable=self.abitrate_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
         ttk.Checkbutton(enc, text="合併時完全 copy（可能 DTS 警告/長度漂移）", variable=self.concat_copy_var).pack(anchor=tk.W, padx=8)
+        rowc = ttk.Frame(enc)
+        rowc.pack(fill=tk.X, **pad)
+        ttk.Label(rowc, text="合併段長模式").grid(row=0, column=0, sticky=tk.W)
+        ttk.Combobox(rowc, textvariable=self.concat_duration_var, values=["ref", "none", "actual"], state="readonly", width=10).grid(row=0, column=1, sticky=tk.W, padx=6)
 
         adv = ttk.LabelFrame(frm, text="全域搜尋參數")
         adv.pack(fill=tk.X, **pad)
@@ -256,6 +261,7 @@ class App(tk.Tk):
                         vbitrate=self.vbitrate_var.get() if self.vbitrate_var.get() else None,
                         abitrate=self.abitrate_var.get(),
                         stabilize_audio=not bool(self.concat_copy_var.get()),
+                        concat_duration_mode=self.concat_duration_var.get(),
                     )
                     self._log(f"完成輸出：{out_path}\n")
                     if self.export_xml_var.get():
@@ -310,6 +316,7 @@ class App(tk.Tk):
                             vbitrate=self.vbitrate_var.get() if self.vbitrate_var.get() else None,
                             abitrate=self.abitrate_var.get(),
                             stabilize_audio=not bool(self.concat_copy_var.get()),
+                            concat_duration_mode=self.concat_duration_var.get(),
                         )
                         self._log(f"完成輸出：{out_path}\n")
                     else:

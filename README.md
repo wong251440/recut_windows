@@ -70,7 +70,11 @@
 預設使用視覺特徵（優先 CLIP，缺少模型時退回 HSV 直方圖），並以 DTW 做時間序列對齊。場景偵測優先採用 PySceneDetect（若未安裝則退回內建 HSV 差異法）。
 
 - 主要指令：`python -m recut.cli --ref 參照.mp4 --src 母帶.mp4 --out out --render`
- - 匯出 Premiere XML：在指令加上 `--export-xml --timeline-fps 30`，將生成 `out/recut_premiere.xml` 可直接在 Premiere 匯入
+- 匯出 Premiere XML：在指令加上 `--export-xml --timeline-fps 30`，將生成 `out/recut_premiere.xml` 可直接在 Premiere 匯入
+ - 合併段長模式：`--concat-duration {ref|none|actual}`
+   - `ref`（預設）：以參照段長鎖定 ffconcat duration（總長鎖等於參照總長）
+   - `none`：不鎖定段長，使用各片段實際長度（避免邊界被強行拉長/縮短）
+   - `actual`：以每段實際幀數/長度鎖定 duration（更穩定的鎖長）
 
 ### 安裝依賴
 
