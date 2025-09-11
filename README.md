@@ -117,7 +117,7 @@
 
 ### 實作備註
 
-- 場景偵測僅支援 `PySceneDetect` 的 `ContentDetector`；未安裝或偵測不到分鏡將報錯，不退回 HSV。
+- 場景偵測：預設 `PySceneDetect`；可選 `TransNet V2`（需要另行安裝套件與權重）。
 - 文字/水印遮罩（EAST）需要額外的模型檔，程式已預留接點，未提供權重檔；一般情況下也可直接略過遮罩（用 CLIP 或 HSV 直方圖仍有一定魯棒性）。
 - DTW 目前以單調遞增方式逐段搜尋，對一般碎剪（順序未被打亂）有良好效果；若遇到倒序/交叉剪，可手動放寬搜尋範圍或降低 `--step` 增加取樣密度。
 
@@ -169,3 +169,11 @@
 `python -m recut.cli --ref ref.mp4 --src src.mp4 --out out --render`
 
 或 GUI：`python -m recut.ui_tk`
+
+### 進階：TransNet V2 場景偵測（可選）
+
+- 安裝相依：請安裝對應的 TransNet V2 套件（例如 `pip install transnetv2`）與權重（依套件說明準備）。
+- 使用：
+  - CLI：`--sc-detector transnet --sc-threshold 0.5 --min-shot 0.10`
+  - GUI：在「鏡頭偵測/邊界精修」區域選擇「偵測器=transnet」
+  - 注意：未安裝或偵測不到時會直接報錯，不會退回其他方法。

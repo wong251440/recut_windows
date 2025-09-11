@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     # Scene detection & refinement
     p.add_argument("--sc-threshold", type=float, default=18.0, help="PySceneDetect ContentDetector threshold（越小越敏感）")
     p.add_argument("--min-shot", dest="min_shot", type=float, default=0.10, help="最短鏡頭長度（秒）")
+    p.add_argument("--sc-detector", choices=["pyscenedetect", "transnet"], default="pyscenedetect", help="場景偵測器（pyscenedetect 或 transnet）")
     p.add_argument("--refine-boundaries", action="store_true", help="啟用邊界幀級精修")
     p.add_argument("--refine-window", type=float, default=0.5, help="精修視窗（秒）")
     p.add_argument("--refine-metric", choices=["clip"], default="clip", help="精修用特徵（僅支援 clip）")
@@ -75,6 +76,7 @@ def main() -> None:
         cache_source_features=not args.no_cache,
         sc_threshold=args.sc_threshold,
         min_scene_len=args.min_shot,
+        sc_detector=args.sc_detector,
         refine_boundaries=args.refine_boundaries,
         refine_window=args.refine_window,
         refine_metric=args.refine_metric,

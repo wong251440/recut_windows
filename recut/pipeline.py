@@ -23,8 +23,9 @@ class PipelineConfig:
     east_model_path: Optional[str] = None
     search_margin: float = 30.0  # seconds around last match
     dtw_window: int | None = None
-    sc_threshold: float | None = 18.0  # for PySceneDetect if used (more sensitive than default 27)
+    sc_threshold: float | None = 18.0  # for scene detector（PySceneDetect / TransNet 門檻）
     min_scene_len: float = 0.10  # seconds, to capture dense jump cuts
+    sc_detector: str = "pyscenedetect"  # pyscenedetect | transnet
     # 非順序對齊（全域搜尋）
     global_search: bool = True
     topk_candidates: int = 12
@@ -57,9 +58,16 @@ def _source_cache_path(out_dir: Path, source_video: Path, cfg: PipelineConfig) -
 
 
 def detect_shots(reference_video: Path, cfg: PipelineConfig) -> List[Shot]:
-    # 僅允許 PySceneDetect，失敗則拋錯
-    from .scene_detect import pyscenedetect
-    return pyscenedetect(reference_video, threshold=(cfg.sc_threshold or 27.0), min_scene_len=cfg.min_scene_len)
+    # 依選擇的偵測器偵測場景
+    if cfg.sc_detector == "pyscenedetect":
+        from .scene_detect import pyscenedetect
+        return pyscenedetect(reference_video, threshold=(cfg.sc_threshold or 27.0), min_scene_len=cfg.min_scene_len)
+    elif cfg.sc_detector == "transnet":
+        from .scene_detect import transnet_detect
+        thr = float(cfg.sc_threshold if cfg.sc_threshold is not None else 0.5)
+        return transnet_detect(reference_video, threshold=thr, min_scene_len=cfg.min_scene_len)
+    else:
+        raise RuntimeError(f"Unknown scene detector: {cfg.sc_detector}")
 
 
 def align(

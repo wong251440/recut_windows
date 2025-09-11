@@ -96,6 +96,7 @@ class App(tk.Tk):
         # Scene detect & refine
         self.sc_threshold_var = tk.DoubleVar(value=18.0)
         self.min_shot_var = tk.DoubleVar(value=0.10)
+        self.sc_detector_var = tk.StringVar(value="pyscenedetect")
         self.refine_var = tk.BooleanVar(value=True)
         self.refine_window_var = tk.DoubleVar(value=0.5)
         self.refine_metric_var = tk.StringVar(value="auto")
@@ -146,6 +147,8 @@ class App(tk.Tk):
         ttk.Entry(rowsc, textvariable=self.sc_threshold_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=6)
         ttk.Label(rowsc, text="最短鏡頭(秒)").grid(row=0, column=2, sticky=tk.W)
         ttk.Entry(rowsc, textvariable=self.min_shot_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=6)
+        ttk.Label(rowsc, text="偵測器").grid(row=0, column=4, sticky=tk.W)
+        ttk.Combobox(rowsc, textvariable=self.sc_detector_var, values=["pyscenedetect","transnet"], width=14, state="readonly").grid(row=0, column=5, sticky=tk.W, padx=6)
         ttk.Checkbutton(scf, text="啟用邊界精修", variable=self.refine_var).pack(anchor=tk.W, padx=8)
         rowrf = ttk.Frame(scf)
         rowrf.pack(fill=tk.X, **pad)
@@ -288,6 +291,7 @@ class App(tk.Tk):
                         cache_source_features=bool(self.cache_var.get()),
                         sc_threshold=float(self.sc_threshold_var.get()),
                         min_scene_len=float(self.min_shot_var.get()),
+                        sc_detector=self.sc_detector_var.get(),
                         refine_boundaries=bool(self.refine_var.get()),
                         refine_window=float(self.refine_window_var.get()),
                         refine_metric=self.refine_metric_var.get(),

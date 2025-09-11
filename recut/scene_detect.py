@@ -70,3 +70,17 @@ def pyscenedetect(video_path: Path, threshold: float = 27.0, min_scene_len: floa
 def detect_shots_auto(video_path: Path) -> List[Shot]:
     # 僅允許 PySceneDetect
     return pyscenedetect(video_path)
+
+
+def transnet_detect(video_path: Path, threshold: float = 0.5, min_scene_len: float = 0.1) -> List[Shot]:
+    """使用 TransNet V2 偵測切點（需要額外套件）。"""
+    try:
+        from .transnet_integration import detect_shots_transnet
+    except Exception as e:  # pragma: no cover
+        raise RuntimeError("TransNet V2 integration missing.") from e
+
+    shots_se = detect_shots_transnet(video_path, threshold=threshold, min_scene_len=min_scene_len)
+    shots: List[Shot] = [Shot(float(s), float(e)) for (s, e) in shots_se]
+    if not shots:
+        raise RuntimeError("No scenes detected by TransNet V2; adjust threshold/min_scene_len.")
+    return shots
