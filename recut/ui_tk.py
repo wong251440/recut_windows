@@ -7,6 +7,8 @@ from pathlib import Path
 import platform
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from PIL import Image, ImageTk  # type: ignore
+import cv2  # type: ignore
 
 from .pipeline import PipelineConfig, align, render_from_alignment
 
@@ -151,6 +153,8 @@ class App(tk.Tk):
         self.run_btn.pack(side=tk.LEFT)
         self.prog = ttk.Progressbar(run_bar, mode="determinate")
         self.prog.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
+        self.prev_btn = ttk.Button(run_bar, text="預覽對齊 (alignment)", command=self._open_preview)
+        self.prev_btn.pack(side=tk.LEFT)
 
         # Log
         self.log = tk.Text(frm, height=16)
@@ -296,6 +300,130 @@ class App(tk.Tk):
                 self.after(0, self.run_btn.config, {"state": tk.NORMAL})
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _open_preview(self) -> None:
+        out = Path(self.out_var.get())
+        align_path = out / "alignment.json"
+        if not align_path.exists():
+            messagebox.showerror("預覽不可用", f"找不到 {align_path}")
+            return
+        try:
+            alignment = json.load(open(align_path, "r", encoding="utf-8"))
+        except Exception as e:
+            messagebox.showerror("讀取失敗", str(e))
+            return
+        PreviewWindow(self, Path(self.ref_var.get()), Path(self.src_var.get()), alignment)
+
+
+class PreviewWindow(tk.Toplevel):
+    def __init__(self, parent: tk.Tk, ref_path: Path, src_path: Path, alignment: dict) -> None:
+        super().__init__(parent)
+        self.title("對齊預覽（參照 vs 母帶）")
+        self.geometry("980x640")
+        self.ref_path = ref_path
+        self.src_path = src_path
+        self.alignment = alignment
+        self.matches = list(alignment.get("matches", []))
+        pad = {"padx": 6, "pady": 6}
+
+        top = ttk.Frame(self)
+        top.pack(fill=tk.X, **pad)
+        ttk.Label(top, text=str(ref_path)).pack(side=tk.LEFT)
+        ttk.Label(top, text=" ⟷ ").pack(side=tk.LEFT)
+        ttk.Label(top, text=str(src_path)).pack(side=tk.LEFT)
+
+        mid = ttk.Frame(self)
+        mid.pack(fill=tk.BOTH, expand=True, **pad)
+
+        # 左：清單
+        left = ttk.Frame(mid)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        ttk.Label(left, text="鏡頭 (idx / 長度 / cost)").pack(anchor=tk.W)
+        self.listbox = tk.Listbox(left, height=24, width=28)
+        self.listbox.pack(fill=tk.Y, expand=False)
+        self.listbox.bind("<<ListboxSelect>>", lambda _: self._on_select())
+
+        # 右：畫面 + 滑桿
+        right = ttk.Frame(mid)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.canvas_ref = tk.Canvas(right, width=480, height=270, bg="black")
+        self.canvas_ref.pack(side=tk.TOP, padx=4, pady=4)
+        self.canvas_src = tk.Canvas(right, width=480, height=270, bg="black")
+        self.canvas_src.pack(side=tk.TOP, padx=4, pady=4)
+
+        ctrl = ttk.Frame(right)
+        ctrl.pack(fill=tk.X, pady=4)
+        ttk.Label(ctrl, text="段內偏移 (秒)").pack(side=tk.LEFT)
+        self.offset_var = tk.DoubleVar(value=0.0)
+        self.slider = ttk.Scale(ctrl, from_=0.0, to=1.0, variable=self.offset_var, command=lambda _=None: self._update_frames())
+        self.slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        self.pos_label = ttk.Label(ctrl, text="0.00s / 0.00s")
+        self.pos_label.pack(side=tk.LEFT)
+
+        # 準備清單
+        for i, m in enumerate(self.matches, start=1):
+            rs, re = float(m.get("ref_start", 0.0)), float(m.get("ref_end", 0.0))
+            cost = float(m.get("cost", 0.0))
+            dur = max(0.0, re - rs)
+            self.listbox.insert(tk.END, f"{i:04d}  len={dur:.2f}s  cost={cost:.3f}")
+
+        if self.matches:
+            self.listbox.selection_set(0)
+            self._on_select()
+
+    def _on_select(self) -> None:
+        sel = self.listbox.curselection()
+        if not sel:
+            return
+        self.idx = sel[0]
+        m = self.matches[self.idx]
+        rs, re = float(m.get("ref_start", 0.0)), float(m.get("ref_end", 0.0))
+        self.ref_len = max(0.0, re - rs)
+        # 調整滑桿範圍 0..ref_len
+        self.slider.configure(from_=0.0, to=max(0.01, self.ref_len))
+        self.offset_var.set(min(self.offset_var.get(), self.ref_len))
+        self._update_frames()
+
+    def _update_frames(self) -> None:
+        if not hasattr(self, "idx"):
+            return
+        m = self.matches[self.idx]
+        rs = float(m.get("ref_start", 0.0))
+        ss = float(m.get("src_start", 0.0))
+        off = float(self.offset_var.get())
+        # 載入兩端影格
+        ref_t = max(0.0, rs + off)
+        src_t = max(0.0, ss + off)
+        ref_im = self._load_frame(self.ref_path, ref_t)
+        src_im = self._load_frame(self.src_path, src_t)
+        if ref_im is not None:
+            self._draw_image(self.canvas_ref, ref_im)
+        if src_im is not None:
+            self._draw_image(self.canvas_src, src_im)
+        self.pos_label.configure(text=f"{off:.2f}s / {self.ref_len:.2f}s")
+
+    def _load_frame(self, path: Path, t: float):
+        cap = cv2.VideoCapture(str(path))
+        cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return None
+        # 等比縮放到寬 480
+        h, w = frame.shape[:2]
+        if w > 0 and h > 0:
+            scale = 480.0 / float(w)
+            nh = int(h * scale)
+            frame = cv2.resize(frame, (480, nh))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)
+
+    def _draw_image(self, canvas: tk.Canvas, img: Image.Image) -> None:
+        tkimg = ImageTk.PhotoImage(img)
+        canvas.delete("all")
+        canvas.create_image(0, 0, anchor=tk.NW, image=tkimg)
+        # 防止被 GC 回收
+        canvas.image = tkimg
 
 
 def main():

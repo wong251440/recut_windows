@@ -108,7 +108,8 @@
 - 啟動：`python -m recut.ui_tk`
 - 視窗中選擇參照與母帶影片、輸出資料夾與參數（步長、特徵、搜尋範圍、DTW 視窗），按下「開始對齊與重剪」。
 - 勾選「完成後直接合成輸出」會自動產生 `recut_output.mp4`。
- - 若勾選「輸出 Premiere XML（FCP7 XML）」會同時在 `out/` 產生 `recut_premiere.xml`，直接匯入 Premiere 使用。
+- 若勾選「輸出 Premiere XML（FCP7 XML）」會同時在 `out/` 產生 `recut_premiere.xml`，直接匯入 Premiere 使用。
+ - 對齊預覽（實驗）：右上「預覽對齊 (alignment)」可載入 `out/alignment.json`，選擇鏡頭並以滑桿同步預覽參照/母帶影格，用於檢查是場景邊界或起點對齊的問題。
 
 ### 實作備註
 
