@@ -1,0 +1,9 @@
+numpy
+opencv-python
+tqdm
+
+# Optional (for better matching)
+# torch
+# torchvision
+# transformers
+# scenedetect

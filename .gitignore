@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Outputs & caches
+out/
+source/
+*.npz
+*.mp4
+*.m4v
+*.mov
+
+# Env
+.env
