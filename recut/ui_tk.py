@@ -44,6 +44,10 @@ class App(tk.Tk):
         self.cache_var = tk.BooleanVar(value=True)
         self.fastcopy_var = tk.BooleanVar(value=False)
         self.from_align_var = tk.BooleanVar(value=False)
+        # Premiere 匯出
+        self.export_xml_var = tk.BooleanVar(value=False)
+        self.timeline_fps_var = tk.DoubleVar(value=30.0)
+        self.ntsc_var = tk.BooleanVar(value=False)
         # 編碼選項
         sysname = platform.system().lower()
         default_vcodec = "h264_videotoolbox" if sysname == "darwin" else ("h264_nvenc" if sysname.startswith("win") else "libx264")
@@ -86,6 +90,16 @@ class App(tk.Tk):
         chk5.pack(anchor=tk.W, **pad)
         chk6 = ttk.Checkbutton(frm, text="直接從現有 alignment.json 合成", variable=self.from_align_var)
         chk6.pack(anchor=tk.W, **pad)
+
+        # Premiere XML 匯出
+        px = ttk.LabelFrame(frm, text="Premiere 匯出（FCP7 XML）")
+        px.pack(fill=tk.X, **pad)
+        ttk.Checkbutton(px, text="輸出 Premiere XML（recut_premiere.xml）", variable=self.export_xml_var).pack(anchor=tk.W, padx=8)
+        rowpx = ttk.Frame(px)
+        rowpx.pack(fill=tk.X, **pad)
+        ttk.Label(rowpx, text="時間軸 FPS").grid(row=0, column=0, sticky=tk.W)
+        ttk.Entry(rowpx, textvariable=self.timeline_fps_var, width=8).grid(row=0, column=1, sticky=tk.W, padx=6)
+        ttk.Checkbutton(rowpx, text="NTSC (drop-frame)", variable=self.ntsc_var).grid(row=0, column=2, sticky=tk.W, padx=6)
 
         # Scene detect & refine controls
         scf = ttk.LabelFrame(frm, text="鏡頭偵測/邊界精修")
@@ -207,6 +221,17 @@ class App(tk.Tk):
                         stabilize_audio=not bool(self.concat_copy_var.get()),
                     )
                     self._log(f"完成輸出：{out_path}\n")
+                    if self.export_xml_var.get():
+                        from .export_premiere import export_fcp7_xml
+                        xml_path = export_fcp7_xml(
+                            alignment,
+                            src,
+                            out / "recut_premiere.xml",
+                            timeline_fps=float(self.timeline_fps_var.get()),
+                            ntsc=bool(self.ntsc_var.get()),
+                            sequence_name="Recut",
+                        )
+                        self._log(f"已輸出 Premiere XML：{xml_path}\n")
                 else:
                     cfg = PipelineConfig(
                         sample_step=float(self.step_var.get()),
@@ -252,6 +277,17 @@ class App(tk.Tk):
                         self._log(f"完成輸出：{out_path}\n")
                     else:
                         self._log(f"對齊完成。結果：{(out / 'alignment.json')}\n")
+                    if self.export_xml_var.get():
+                        from .export_premiere import export_fcp7_xml
+                        xml_path = export_fcp7_xml(
+                            alignment,
+                            src,
+                            out / "recut_premiere.xml",
+                            timeline_fps=float(self.timeline_fps_var.get()),
+                            ntsc=bool(self.ntsc_var.get()),
+                            sequence_name="Recut",
+                        )
+                        self._log(f"已輸出 Premiere XML：{xml_path}\n")
             except Exception as e:
                 tb = traceback.format_exc()
                 self.after(0, self._log, f"發生錯誤：{e}\n{tb}\n")

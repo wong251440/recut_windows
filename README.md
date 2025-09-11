@@ -70,6 +70,7 @@
 預設使用視覺特徵（優先 CLIP，缺少模型時退回 HSV 直方圖），並以 DTW 做時間序列對齊。場景偵測優先採用 PySceneDetect（若未安裝則退回內建 HSV 差異法）。
 
 - 主要指令：`python -m recut.cli --ref 參照.mp4 --src 母帶.mp4 --out out --render`
+ - 匯出 Premiere XML：在指令加上 `--export-xml --timeline-fps 30`，將生成 `out/recut_premiere.xml` 可直接在 Premiere 匯入
 
 ### 安裝依賴
 
@@ -107,6 +108,7 @@
 - 啟動：`python -m recut.ui_tk`
 - 視窗中選擇參照與母帶影片、輸出資料夾與參數（步長、特徵、搜尋範圍、DTW 視窗），按下「開始對齊與重剪」。
 - 勾選「完成後直接合成輸出」會自動產生 `recut_output.mp4`。
+ - 若勾選「輸出 Premiere XML（FCP7 XML）」會同時在 `out/` 產生 `recut_premiere.xml`，直接匯入 Premiere 使用。
 
 ### 實作備註
 

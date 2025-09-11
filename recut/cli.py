@@ -33,6 +33,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fast-copy", action="store_true", help="以快速但不精準的 copy 模式裁切（可能累積段長誤差）")
     p.add_argument("--from-alignment", action="store_true", help="跳過對齊，直接讀取 out/alignment.json 進行合成")
     p.add_argument("--alignment", type=Path, default=None, help="指定 alignment.json 路徑（優先於 --from-alignment）")
+    # Premiere 匯出
+    p.add_argument("--export-xml", action="store_true", help="輸出 Premiere 可匯入的 FCP7 XML（recut_premiere.xml）")
+    p.add_argument("--timeline-fps", type=float, default=30.0, help="XML 時間軸 FPS（預設 30）")
+    p.add_argument("--ntsc", action="store_true", help="XML 使用 NTSC (drop-frame) 記號，用於 29.97/59.94")
     # 編碼相關
     sysname = platform.system().lower()
     default_vcodec = "h264_videotoolbox" if sysname == "darwin" else ("h264_nvenc" if sysname.startswith("win") else "h264_videotoolbox")
@@ -91,6 +95,17 @@ def main() -> None:
             stabilize_audio=not args.concat_copy,
         )
         print(f"已輸出影片：{final_out.as_posix()}")
+        if args.export_xml:
+            from .export_premiere import export_fcp7_xml
+            xml_path = export_fcp7_xml(
+                alignment,
+                args.src,
+                args.out / "recut_premiere.xml",
+                timeline_fps=float(args.timeline_fps),
+                ntsc=bool(args.ntsc),
+                sequence_name="Recut",
+            )
+            print(f"已輸出 Premiere XML：{xml_path.as_posix()}")
         return
 
     print("[INFO] 開始對齊流程…")
@@ -124,6 +139,17 @@ def main() -> None:
         print(f"已輸出影片：{final_out.as_posix()}")
     else:
         print("若要直接合成輸出，請加上 --render 參數。")
+    if args.export_xml:
+        from .export_premiere import export_fcp7_xml
+        xml_path = export_fcp7_xml(
+            alignment,
+            args.src,
+            args.out / "recut_premiere.xml",
+            timeline_fps=float(args.timeline_fps),
+            ntsc=bool(args.ntsc),
+            sequence_name="Recut",
+        )
+        print(f"已輸出 Premiere XML：{xml_path.as_posix()}")
 
 
 if __name__ == "__main__":
