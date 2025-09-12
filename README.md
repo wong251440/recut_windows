@@ -99,6 +99,9 @@
 - `--search-margin`: 每段搜尋範圍（秒）（預設 30）。
 - `--dtw-window`: DTW 視窗大小（0 表示自動）。
 - `--render`: 完成對齊後，直接用 ffmpeg 合成輸出。
+- `--scene-only`: 只做場景偵測，輸出 `out/shots.json` 後結束。
+- `--use-existing-scenes` / `--scenes path.json`: 從既有場景清單續跑（跳過場景偵測）。
+- `--clip-batch`: CLIP 批次大小；執行時會在 console 顯示目前批次與依裝置建議值。
 
 執行後會輸出：
 
@@ -112,6 +115,10 @@
 - 啟動：`python -m recut.ui_tk`
 - 視窗中選擇參照與母帶影片、輸出資料夾與參數（步長、特徵、搜尋範圍、DTW 視窗），按下「開始對齊與重剪」。
 - 勾選「完成後直接合成輸出」會自動產生 `recut_output.mp4`。
+- 新增：
+  - 「只做鏡頭偵測」可輸出 `shots.json` 便於先檢查切點或供續跑使用。
+  - 「從已偵測的鏡頭續跑」會讀取 `out/shots.json`，跳過場景偵測。
+  - 「預覽鏡頭 (scenes)」可在僅有 `shots.json` 的情況下逐段預覽參照鏡頭畫面與滑桿定位。
 - 若勾選「輸出 Premiere XML（FCP7 XML）」會同時在 `out/` 產生 `recut_premiere.xml`，直接匯入 Premiere 使用。
  - 對齊預覽（實驗）：右上「預覽對齊 (alignment)」可載入 `out/alignment.json`，選擇鏡頭並以滑桿同步預覽參照/母帶影格，用於檢查是場景邊界或起點對齊的問題。
 
@@ -172,8 +179,30 @@
 
 ### 進階：TransNet V2 場景偵測（可選）
 
-- 安裝相依：請安裝對應的 TransNet V2 套件（例如 `pip install transnetv2`）與權重（依套件說明準備）。
-- 使用：
-  - CLI：`--sc-detector transnet --sc-threshold 0.5 --min-shot 0.10`
-  - GUI：在「鏡頭偵測/邊界精修」區域選擇「偵測器=transnet」
+- 安裝套件（CPU 版，跨平台）：
+  - `pip install transnetv2`
+  - 需要 TensorFlow 執行環境；建議依平台安裝：
+    - macOS（Apple Silicon/M 系列）：`pip install tensorflow-macos tensorflow-metal`
+    - Windows（CPU）：`pip install tensorflow==2.10.*`（或依你環境選擇 2.11+ CPU 版）
+    - Linux：依 TensorFlow 官方文件安裝；若要 GPU，請遵循 CUDA/cuDNN 相容版本
+
+- 權重下載：
+  - 多數 `transnetv2` 發行版會在第一次呼叫 `predict_video()` 時自動下載權重到使用者快取資料夾。
+  - 若需要手動下載，可嘗試（不同版本 API 稍有差異，擇一可用）：
+    - `python -c "from transnetv2 import TransNetV2; TransNetV2().download()"`
+    - 或 `python -c "from transnetv2 import TransNetV2; TransNetV2().download_model()"`
+  - 亦可依該套件 README 提供的連結下載後，放入其預設的 models/weights 快取路徑。
+
+- 驗證安裝（必要時也會觸發權重下載）：
+  - `python - <<'PY'
+from transnetv2 import TransNetV2
+m = TransNetV2()
+pred = m.predict_video('source/example_short.mp4')  # 請替換成你的測試影片
+print('OK')
+PY`
+
+- 在本專案中使用：
+  - CLI：加入 `--sc-detector transnet`（可搭配 `--min-shot` 與 `--sc-threshold` 調整靈敏度）。
+    - 範例：`python -m recut.cli --ref ref.mp4 --src src.mp4 --out out --sc-detector transnet --render`
+  - GUI：在「鏡頭偵測/邊界精修」區的「偵測器」下拉選 `transnet`。
   - 注意：未安裝或偵測不到時會直接報錯，不會退回其他方法。

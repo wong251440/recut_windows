@@ -37,6 +37,10 @@ class PipelineConfig:
     refine_window: float = 0.5
     refine_metric: str = "clip"  # 僅允許 clip
     cache_source_features: bool = True
+    # CLIP 批次大小（同時處理影格數）
+    clip_batch_size: int = 16
+    # 從已存在的場景清單續跑（若提供，將跳過場景偵測）
+    scenes_path: Optional[Path] = None
 
 
 def _source_cache_path(out_dir: Path, source_video: Path, cfg: PipelineConfig) -> Path:
@@ -70,6 +74,41 @@ def detect_shots(reference_video: Path, cfg: PipelineConfig) -> List[Shot]:
         raise RuntimeError(f"Unknown scene detector: {cfg.sc_detector}")
 
 
+def _load_scenes_from_json(path: Path) -> List[Shot]:
+    data = json.load(open(path, "r", encoding="utf-8"))
+    shots = data.get("shots") if isinstance(data, dict) else None
+    if not isinstance(shots, list):
+        raise RuntimeError(f"Invalid scenes file: {path}")
+    out: List[Shot] = []
+    for it in shots:
+        try:
+            s, e = float(it.get("start")), float(it.get("end"))
+            out.append(Shot(s, e))
+        except Exception:
+            continue
+    if not out:
+        raise RuntimeError(f"No shots in scenes file: {path}")
+    return out
+
+
+def scene_detect_only(reference_video: Path, out_dir: Path, cfg: PipelineConfig, log: Optional[callable] = None) -> Path:
+    ensure_dir(out_dir)
+    shots = detect_shots(reference_video, cfg)
+    scenes = {
+        "reference": str(reference_video),
+        "detector": cfg.sc_detector,
+        "threshold": cfg.sc_threshold,
+        "min_scene_len": cfg.min_scene_len,
+        "shots": [{"start": s.start, "end": s.end} for s in shots],
+    }
+    out_path = out_dir / "shots.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(scenes, f, ensure_ascii=False, indent=2)
+    if log:
+        log(f"已輸出場景清單：{out_path}")
+    return out_path
+
+
 def align(
     reference_video: Path,
     source_video: Path,
@@ -85,7 +124,14 @@ def align(
     ref_dur = video_duration(reference_video)
     src_dur = video_duration(source_video)
 
-    shots = detect_shots(reference_video, cfg)
+    # 場景偵測或讀取既有場景
+    shots: List[Shot]
+    if cfg.scenes_path is not None and Path(cfg.scenes_path).exists():
+        if log:
+            log(f"使用既有場景清單：{Path(cfg.scenes_path).name}")
+        shots = _load_scenes_from_json(Path(cfg.scenes_path))
+    else:
+        shots = detect_shots(reference_video, cfg)
     result: Dict = {
         "reference": str(reference_video),
         "source": str(source_video),
@@ -93,6 +139,21 @@ def align(
         "matches": [],
         "meta": {"ref_duration": ref_dur, "src_duration": src_dur, "step": cfg.sample_step},
     }
+
+    # CLIP 執行環境資訊與批次建議
+    try:
+        from .features import clip_runtime_info
+        info = clip_runtime_info()
+        if log:
+            dev = info.get("device")
+            vram = info.get("vram_gb")
+            sugg = info.get("suggest_batch")
+            if vram is not None:
+                log(f"CLIP 裝置：{dev}, VRAM≈{float(vram):.1f}GB, 目前批次={cfg.clip_batch_size}，建議批次≈{sugg}")
+            else:
+                log(f"CLIP 裝置：{dev}, 目前批次={cfg.clip_batch_size}，建議批次≈{sugg}")
+    except Exception:
+        pass
 
     # Precompute source sequence features at uniform grid（支援快取）
     src_times = list(np.arange(0, max(1e-6, src_dur), cfg.sample_step).astype(float))
@@ -123,7 +184,7 @@ def align(
             src_feats = extract_sequence_features(
                 source_video,
                 src_times,
-                FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor),
+                FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor, batch_size=cfg.clip_batch_size),
                 on_progress=_src_prog,
             )
             if cfg.cache_source_features:
@@ -140,7 +201,7 @@ def align(
         src_feats = extract_sequence_features(
             source_video,
             src_times,
-            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor),
+            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor, batch_size=cfg.clip_batch_size),
             on_progress=_src_prog,
         )
         if cfg.cache_source_features:
@@ -185,7 +246,7 @@ def align(
         ref_feats = extract_sequence_features(
             reference_video,
             ref_times,
-            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor),
+            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor, batch_size=cfg.clip_batch_size),
         )
 
         if cfg.global_search:

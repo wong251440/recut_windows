@@ -33,6 +33,7 @@ class FeatureConfig:
     mask_boxes: Optional[List[MaskBox]] = None
     east_model_path: Optional[str] = None
     use_fast_processor: bool = True
+    batch_size: int = 16
 
 
 def load_frame_at(video_path: Path, t: float) -> Optional[np.ndarray]:
@@ -207,8 +208,9 @@ def extract_sequence_features(
             batch_frames.append(frame)
             batch_indices.append(len(feats) - 1)
 
-            if len(batch_frames) >= 16:
-                out = extractor.encode_images(batch_frames, batch_size=16)
+            bs = max(1, int(getattr(cfg, "batch_size", 16)))
+            if len(batch_frames) >= bs:
+                out = extractor.encode_images(batch_frames, batch_size=bs)
                 for k, pos in enumerate(batch_indices):
                     vec = out[k] if k < len(out) else np.zeros((out_dim,), dtype=np.float32)
                     feats[pos] = vec.astype(np.float32)
@@ -219,7 +221,8 @@ def extract_sequence_features(
                 batch_indices.clear()
         # 處理尾批
         if batch_frames:
-            out = extractor.encode_images(batch_frames, batch_size=16)
+            bs = max(1, int(getattr(cfg, "batch_size", 16)))
+            out = extractor.encode_images(batch_frames, batch_size=bs)
             for k, pos in enumerate(batch_indices):
                 vec = out[k] if k < len(out) else np.zeros((out_dim,), dtype=np.float32)
                 feats[pos] = vec.astype(np.float32)
@@ -250,3 +253,39 @@ def extract_sequence_features(
                     feats[i] = np.pad(feats[i], (0, out_dim - feats[i].shape[0]))
         feats.append(np.asarray(vec, dtype=np.float32))
     return np.stack(feats, axis=0)
+
+
+def clip_runtime_info() -> dict:
+    info = {"device": "cpu", "vram_gb": None, "suggest_batch": 8}
+    try:
+        import torch  # type: ignore
+        if torch.cuda.is_available():
+            info["device"] = "cuda"
+            try:
+                props = torch.cuda.get_device_properties(0)
+                vram_gb = float(getattr(props, "total_memory", 0) / (1024 ** 3))
+            except Exception:
+                vram_gb = None
+            info["vram_gb"] = vram_gb
+            # 粗略建議：依 VRAM 估批次
+            if vram_gb is None:
+                info["suggest_batch"] = 16
+            elif vram_gb >= 20:
+                info["suggest_batch"] = 64
+            elif vram_gb >= 12:
+                info["suggest_batch"] = 48
+            elif vram_gb >= 8:
+                info["suggest_batch"] = 32
+            elif vram_gb >= 6:
+                info["suggest_batch"] = 24
+            else:
+                info["suggest_batch"] = 16
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            info["device"] = "mps"
+            info["suggest_batch"] = 32
+        else:
+            info["device"] = "cpu"
+            info["suggest_batch"] = 8
+    except Exception:
+        pass
+    return info

@@ -72,6 +72,8 @@ class App(tk.Tk):
         self.dtw_var = tk.IntVar(value=0)
         self.render_var = tk.BooleanVar(value=True)
         self.resume_var = tk.BooleanVar(value=True)
+        self.scene_only_var = tk.BooleanVar(value=False)
+        self.use_scenes_var = tk.BooleanVar(value=False)
         self.global_var = tk.BooleanVar(value=True)
         self.topk_var = tk.IntVar(value=12)
         self.anchors_var = tk.IntVar(value=5)
@@ -119,6 +121,8 @@ class App(tk.Tk):
         chk.pack(anchor=tk.W, **pad)
         chk2 = ttk.Checkbutton(frm, text="允許中斷續跑 (--resume)", variable=self.resume_var)
         chk2.pack(anchor=tk.W, **pad)
+        ttk.Checkbutton(frm, text="只做鏡頭偵測（輸出 shots.json）", variable=self.scene_only_var).pack(anchor=tk.W, **pad)
+        ttk.Checkbutton(frm, text="從已偵測的鏡頭續跑（使用 out/shots.json）", variable=self.use_scenes_var).pack(anchor=tk.W, **pad)
         chk3 = ttk.Checkbutton(frm, text="非順序對齊（全域搜尋）", variable=self.global_var)
         chk3.pack(anchor=tk.W, **pad)
         chk4 = ttk.Checkbutton(frm, text="啟用母帶特徵快取", variable=self.cache_var)
@@ -196,6 +200,7 @@ class App(tk.Tk):
         self.prog.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8)
         self.prev_btn = ttk.Button(run_bar, text="預覽對齊 (alignment)", command=self._open_preview)
         self.prev_btn.pack(side=tk.LEFT)
+        ttk.Button(run_bar, text="預覽鏡頭 (scenes)", command=self._open_scene_preview).pack(side=tk.LEFT, padx=4)
 
         # Log
         self.log = tk.Text(frm, height=16)
@@ -240,14 +245,38 @@ class App(tk.Tk):
 
         self.run_btn.config(state=tk.DISABLED)
         self.prog.configure(value=0.0, maximum=1.0)
-        if self.from_align_var.get():
+        if self.scene_only_var.get():
+            self._log("只執行鏡頭偵測…\n")
+        elif self.from_align_var.get():
             self._log("從現有 alignment.json 合成…\n")
         else:
             self._log("開始對齊…\n")
 
         def worker():
             try:
-                if self.from_align_var.get():
+                if self.scene_only_var.get():
+                    from .pipeline import scene_detect_only
+                    scene_detect_only(
+                        ref,
+                        out,
+                        PipelineConfig(
+                            sample_step=float(self.step_var.get()),
+                            feature_method=self.feature_var.get(),
+                            search_margin=float(self.margin_var.get()),
+                            dtw_window=int(self.dtw_var.get()) if int(self.dtw_var.get()) > 0 else None,
+                            global_search=bool(self.global_var.get()),
+                            topk_candidates=int(self.topk_var.get()),
+                            anchor_count=int(self.anchors_var.get()),
+                            candidate_window=float(self.candwin_var.get()),
+                            cache_source_features=bool(self.cache_var.get()),
+                            sc_threshold=float(self.sc_threshold_var.get()),
+                            min_scene_len=float(self.min_shot_var.get()),
+                            sc_detector=self.sc_detector_var.get(),
+                        ),
+                        log=lambda m: self.after(0, self._log, m + "\n"),
+                    )
+                    self._log(f"完成。已輸出：{(out / 'shots.json')}\n")
+                elif self.from_align_var.get():
                     align_path = out / "alignment.json"
                     if not align_path.exists():
                         raise FileNotFoundError(f"找不到 {align_path}")
@@ -296,6 +325,11 @@ class App(tk.Tk):
                         refine_window=float(self.refine_window_var.get()),
                         refine_metric=self.refine_metric_var.get(),
                     )
+                    if bool(self.use_scenes_var.get()):
+                        sp = out / "shots.json"
+                        if not sp.exists():
+                            raise FileNotFoundError(f"找不到 {sp}")
+                        cfg.scenes_path = sp
 
                     alignment = align(
                         ref,
@@ -357,6 +391,20 @@ class App(tk.Tk):
             messagebox.showerror("讀取失敗", str(e))
             return
         PreviewWindow(self, Path(self.ref_var.get()), Path(self.src_var.get()), alignment)
+
+    def _open_scene_preview(self) -> None:
+        out = Path(self.out_var.get())
+        shots_path = out / "shots.json"
+        if not shots_path.exists():
+            messagebox.showerror("預覽不可用", f"找不到 {shots_path}")
+            return
+        try:
+            data = json.load(open(shots_path, "r", encoding="utf-8"))
+            shots = data.get("shots", [])
+        except Exception as e:
+            messagebox.showerror("讀取失敗", str(e))
+            return
+        ScenesPreviewWindow(self, Path(self.ref_var.get()), shots)
 
 
 class PreviewWindow(tk.Toplevel):
@@ -467,6 +515,87 @@ class PreviewWindow(tk.Toplevel):
         canvas.delete("all")
         canvas.create_image(0, 0, anchor=tk.NW, image=tkimg)
         # 防止被 GC 回收
+        canvas.image = tkimg
+
+
+class ScenesPreviewWindow(tk.Toplevel):
+    def __init__(self, parent: tk.Tk, ref_path: Path, shots: list) -> None:
+        super().__init__(parent)
+        self.title("鏡頭預覽（參照）")
+        self.geometry("780x560")
+        self.ref_path = ref_path
+        self.shots = shots
+        pad = {"padx": 6, "pady": 6}
+        ttk.Label(self, text=str(ref_path)).pack(anchor=tk.W, **pad)
+        mid = ttk.Frame(self)
+        mid.pack(fill=tk.BOTH, expand=True)
+        left = ttk.Frame(mid)
+        left.pack(side=tk.LEFT, fill=tk.Y)
+        ttk.Label(left, text="鏡頭 (idx / 長度)").pack(anchor=tk.W)
+        self.listbox = tk.Listbox(left, height=24, width=28)
+        self.listbox.pack(fill=tk.Y)
+        self.listbox.bind("<<ListboxSelect>>", lambda _=None: self._on_select())
+        right = ttk.Frame(mid)
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.canvas = tk.Canvas(right, width=640, height=360, bg="black")
+        self.canvas.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        ctrl = ttk.Frame(right)
+        ctrl.pack(fill=tk.X)
+        ttk.Label(ctrl, text="段內偏移 (秒)").pack(side=tk.LEFT)
+        self.offset_var = tk.DoubleVar(value=0.0)
+        self.slider = ttk.Scale(ctrl, from_=0.0, to=1.0, variable=self.offset_var, command=lambda _=None: self._update_frame())
+        self.slider.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
+        self.pos_label = ttk.Label(ctrl, text="0.00s")
+        self.pos_label.pack(side=tk.LEFT)
+        for i, it in enumerate(self.shots, start=1):
+            s, e = float(it.get("start", 0.0)), float(it.get("end", 0.0))
+            self.listbox.insert(tk.END, f"{i:04d}  len={max(0.0, e-s):.2f}s")
+        if self.shots:
+            self.listbox.selection_set(0)
+            self._on_select()
+
+    def _on_select(self) -> None:
+        sel = self.listbox.curselection()
+        if not sel:
+            return
+        self.idx = sel[0]
+        it = self.shots[self.idx]
+        s, e = float(it.get("start", 0.0)), float(it.get("end", 0.0))
+        self.cur_start = s
+        self.cur_len = max(0.0, e - s)
+        self.slider.configure(from_=0.0, to=max(0.01, self.cur_len))
+        self.offset_var.set(min(self.offset_var.get(), self.cur_len))
+        self._update_frame()
+
+    def _update_frame(self) -> None:
+        if not hasattr(self, "idx"):
+            return
+        t = float(self.cur_start + float(self.offset_var.get()))
+        im = self._load_frame(self.ref_path, t)
+        if im is not None:
+            self._draw_image(self.canvas, im)
+        self.pos_label.configure(text=f"{float(self.offset_var.get()):.2f}s / {self.cur_len:.2f}s")
+
+    def _load_frame(self, path: Path, t: float):
+        cap = cv2.VideoCapture(str(path))
+        cap.set(cv2.CAP_PROP_POS_MSEC, float(t) * 1000.0)
+        ok, frame = cap.read()
+        cap.release()
+        if not ok or frame is None:
+            return None
+        h, w = frame.shape[:2]
+        if w <= 0 or h <= 0:
+            return None
+        scale = 640.0 / float(w)
+        nh = int(h * scale)
+        frame = cv2.resize(frame, (640, nh))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        return Image.fromarray(rgb)
+
+    def _draw_image(self, canvas: tk.Canvas, pil_img: Image.Image) -> None:
+        tkimg = ImageTk.PhotoImage(pil_img)
+        canvas.delete("all")
+        canvas.create_image(0, 0, anchor=tk.NW, image=tkimg)
         canvas.image = tkimg
 
 
