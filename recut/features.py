@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover
     CLIPModel = None  # type: ignore
     CLIPImageProcessor = None  # type: ignore
 
-from .masking import MaskBox, apply_mask
+from .masking import MaskBox, apply_mask, detect_text_boxes
 
 
 @dataclass
@@ -34,6 +34,7 @@ class FeatureConfig:
     east_model_path: Optional[str] = None
     use_fast_processor: bool = True
     batch_size: int = 16
+    auto_mask_text: bool = False
 
 
 def load_frame_at(video_path: Path, t: float) -> Optional[np.ndarray]:
@@ -41,6 +42,19 @@ def load_frame_at(video_path: Path, t: float) -> Optional[np.ndarray]:
         return None
     cap = cv2.VideoCapture(str(video_path))
     cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        return None
+    return frame
+
+
+def load_frame_idx(video_path: Path, idx: int) -> Optional[np.ndarray]:
+    """Load a frame by index using OpenCV frame positioning to improve frame accuracy."""
+    if cv2 is None:
+        return None
+    cap = cv2.VideoCapture(str(video_path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, float(max(0, int(idx))))
     ok, frame = cap.read()
     cap.release()
     if not ok:
@@ -171,6 +185,15 @@ def video_fps(video_path: Path) -> float:
     return float(fps if fps > 0 else 30.0)
 
 
+def video_frame_count(video_path: Path) -> int:
+    if cv2 is None:
+        return 0
+    cap = cv2.VideoCapture(str(video_path))
+    n = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    cap.release()
+    return max(0, n)
+
+
 def extract_sequence_features(
     video_path: Path,
     times: List[float],
@@ -203,6 +226,13 @@ def extract_sequence_features(
                 continue
             if cfg.mask_boxes:
                 frame = apply_mask(frame, cfg.mask_boxes)
+            elif cfg.auto_mask_text and cfg.east_model_path:
+                try:
+                    boxes = detect_text_boxes(frame, cfg.east_model_path)
+                    if boxes:
+                        frame = apply_mask(frame, boxes)
+                except Exception:
+                    pass
             # 先放置 placeholder，稍後填回
             feats.append(None)
             batch_frames.append(frame)
@@ -242,6 +272,13 @@ def extract_sequence_features(
             continue
         if cfg.mask_boxes:
             frame = apply_mask(frame, cfg.mask_boxes)
+        elif cfg.auto_mask_text and cfg.east_model_path:
+            try:
+                boxes = detect_text_boxes(frame, cfg.east_model_path)
+                if boxes:
+                    frame = apply_mask(frame, boxes)
+            except Exception:
+                pass
         vec = extractor(frame)
         if vec is None or (hasattr(vec, "size") and getattr(vec, "size", 0) == 0):
             feats.append(np.zeros((out_dim,), dtype=np.float32))

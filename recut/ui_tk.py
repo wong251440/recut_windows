@@ -66,7 +66,7 @@ class App(tk.Tk):
         self._row_path(frm, "輸出資料夾", self.out_var, self._browse_out)
 
         # Params
-        self.step_var = tk.DoubleVar(value=0.2)
+        self.step_var = tk.DoubleVar(value=0.0)
         self.feature_var = tk.StringVar(value="clip")
         self.margin_var = tk.DoubleVar(value=30.0)
         self.dtw_var = tk.IntVar(value=0)
@@ -81,24 +81,26 @@ class App(tk.Tk):
         self.cache_var = tk.BooleanVar(value=True)
         self.fastcopy_var = tk.BooleanVar(value=False)
         self.from_align_var = tk.BooleanVar(value=False)
+        # CLIP 參數
+        self.clip_batch_var = tk.IntVar(value=16)
         # Premiere 匯出
         self.export_xml_var = tk.BooleanVar(value=False)
         self.timeline_fps_var = tk.DoubleVar(value=30.0)
         self.ntsc_var = tk.BooleanVar(value=False)
         # 編碼選項
         sysname = platform.system().lower()
-        default_vcodec = "h264_videotoolbox" if sysname == "darwin" else ("h264_nvenc" if sysname.startswith("win") else "libx264")
+        default_vcodec = "h264_videotoolbox" if sysname == "darwin" else "libx264"
         self.vcodec_var = tk.StringVar(value=default_vcodec)
         self.crf_var = tk.IntVar(value=18)
         self.preset_var = tk.StringVar(value="veryfast")
         self.vbitrate_var = tk.StringVar(value="5M")
         self.abitrate_var = tk.StringVar(value="192k")
         self.concat_copy_var = tk.BooleanVar(value=False)
-        self.concat_duration_var = tk.StringVar(value="ref")  # ref | none | actual
+        self.concat_duration_var = tk.StringVar(value="actual")  # ref | none | actual
         # Scene detect & refine
-        self.sc_threshold_var = tk.DoubleVar(value=18.0)
+        self.sc_threshold_var = tk.DoubleVar(value=0.5)
         self.min_shot_var = tk.DoubleVar(value=0.10)
-        self.sc_detector_var = tk.StringVar(value="pyscenedetect")
+        self.sc_detector_var = tk.StringVar(value="transnet")
         self.refine_var = tk.BooleanVar(value=True)
         self.refine_window_var = tk.DoubleVar(value=0.5)
         self.refine_metric_var = tk.StringVar(value="auto")
@@ -117,6 +119,12 @@ class App(tk.Tk):
         add_field(2, "搜尋範圍(s)", ttk.Entry(grid, textvariable=self.margin_var, width=8))
         add_field(3, "DTW 視窗", ttk.Entry(grid, textvariable=self.dtw_var, width=8))
 
+        # CLIP 批次大小設定（單獨一列，避免擁擠）
+        clipf = ttk.Frame(frm)
+        clipf.pack(fill=tk.X, **pad)
+        ttk.Label(clipf, text="CLIP 批次大小").pack(side=tk.LEFT)
+        ttk.Entry(clipf, textvariable=self.clip_batch_var, width=8).pack(side=tk.LEFT, padx=6)
+
         chk = ttk.Checkbutton(frm, text="完成後直接合成輸出 (--render)", variable=self.render_var)
         chk.pack(anchor=tk.W, **pad)
         chk2 = ttk.Checkbutton(frm, text="允許中斷續跑 (--resume)", variable=self.resume_var)
@@ -127,7 +135,7 @@ class App(tk.Tk):
         chk3.pack(anchor=tk.W, **pad)
         chk4 = ttk.Checkbutton(frm, text="啟用母帶特徵快取", variable=self.cache_var)
         chk4.pack(anchor=tk.W, **pad)
-        chk5 = ttk.Checkbutton(frm, text="快速裁切（可能不精準）", variable=self.fastcopy_var)
+        chk5 = ttk.Checkbutton(frm, text="快速裁切（已停用，統一精準單次合成）", variable=self.fastcopy_var, state=tk.DISABLED)
         chk5.pack(anchor=tk.W, **pad)
         chk6 = ttk.Checkbutton(frm, text="直接從現有 alignment.json 合成", variable=self.from_align_var)
         chk6.pack(anchor=tk.W, **pad)
@@ -168,13 +176,13 @@ class App(tk.Tk):
         rowe = ttk.Frame(enc)
         rowe.pack(fill=tk.X, **pad)
         ttk.Label(rowe, text="視訊編碼").grid(row=0, column=0, sticky=tk.W)
-        vb = ttk.Combobox(rowe, textvariable=self.vcodec_var, values=["h264_videotoolbox", "h264_nvenc"], width=16, state="readonly")
+        vb = ttk.Combobox(rowe, textvariable=self.vcodec_var, values=["h264_videotoolbox", "libx264"], width=16, state="readonly")
         vb.grid(row=0, column=1, sticky=tk.W, padx=6)
-        ttk.Label(rowe, text="V bitrate (HW)").grid(row=0, column=2, sticky=tk.W)
+        ttk.Label(rowe, text="V bitrate (VTB)").grid(row=0, column=2, sticky=tk.W)
         ttk.Entry(rowe, textvariable=self.vbitrate_var, width=8).grid(row=0, column=3, sticky=tk.W, padx=6)
         ttk.Label(rowe, text="A bitrate").grid(row=0, column=4, sticky=tk.W)
         ttk.Entry(rowe, textvariable=self.abitrate_var, width=8).grid(row=0, column=5, sticky=tk.W, padx=6)
-        ttk.Checkbutton(enc, text="合併時完全 copy（可能 DTS 警告/長度漂移）", variable=self.concat_copy_var).pack(anchor=tk.W, padx=8)
+        ttk.Checkbutton(enc, text="合併時完全 copy（已停用）", variable=self.concat_copy_var, state=tk.DISABLED).pack(anchor=tk.W, padx=8)
         rowc = ttk.Frame(enc)
         rowc.pack(fill=tk.X, **pad)
         ttk.Label(rowc, text="合併段長模式").grid(row=0, column=0, sticky=tk.W)
@@ -268,6 +276,7 @@ class App(tk.Tk):
                             topk_candidates=int(self.topk_var.get()),
                             anchor_count=int(self.anchors_var.get()),
                             candidate_window=float(self.candwin_var.get()),
+                            clip_batch_size=int(self.clip_batch_var.get()),
                             cache_source_features=bool(self.cache_var.get()),
                             sc_threshold=float(self.sc_threshold_var.get()),
                             min_scene_len=float(self.min_shot_var.get()),
@@ -286,14 +295,15 @@ class App(tk.Tk):
                         alignment,
                         out,
                         run=True,
-                        accurate_cut=not bool(self.fastcopy_var.get()),
+                        accurate_cut=True,
                         vcodec=self.vcodec_var.get(),
                         crf=int(self.crf_var.get()),
                         preset=self.preset_var.get(),
                         vbitrate=self.vbitrate_var.get() if self.vbitrate_var.get() else None,
                         abitrate=self.abitrate_var.get(),
-                        stabilize_audio=not bool(self.concat_copy_var.get()),
+                        stabilize_audio=False,
                         concat_duration_mode=self.concat_duration_var.get(),
+                        gpu=None,
                     )
                     self._log(f"完成輸出：{out_path}\n")
                     if self.export_xml_var.get():
@@ -317,6 +327,7 @@ class App(tk.Tk):
                         topk_candidates=int(self.topk_var.get()),
                         anchor_count=int(self.anchors_var.get()),
                         candidate_window=float(self.candwin_var.get()),
+                        clip_batch_size=int(self.clip_batch_var.get()),
                         cache_source_features=bool(self.cache_var.get()),
                         sc_threshold=float(self.sc_threshold_var.get()),
                         min_scene_len=float(self.min_shot_var.get()),
@@ -347,15 +358,16 @@ class App(tk.Tk):
                             alignment,
                             out,
                             run=True,
-                            accurate_cut=not bool(self.fastcopy_var.get()),
+                            accurate_cut=True,
                             vcodec=self.vcodec_var.get(),
                             crf=int(self.crf_var.get()),
                             preset=self.preset_var.get(),
                             vbitrate=self.vbitrate_var.get() if self.vbitrate_var.get() else None,
                             abitrate=self.abitrate_var.get(),
-                            stabilize_audio=not bool(self.concat_copy_var.get()),
-                            concat_duration_mode=self.concat_duration_var.get(),
-                        )
+                        stabilize_audio=False,
+                        concat_duration_mode=self.concat_duration_var.get(),
+                        gpu=None,
+                    )
                         self._log(f"完成輸出：{out_path}\n")
                     else:
                         self._log(f"對齊完成。結果：{(out / 'alignment.json')}\n")

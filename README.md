@@ -67,12 +67,14 @@
 - CLI：依據流程以「參照影片 → 自動對齊 → 批次裁切 → 合成」完成重剪。
 - 桌面 GUI（Tkinter）：可點選檔案與設定參數、觀察進度。
 
-預設使用視覺特徵（優先 CLIP，缺少模型時退回 HSV 直方圖），並以 DTW 做時間序列對齊。場景偵測優先採用 PySceneDetect（若未安裝則退回內建 HSV 差異法）。
+預設使用視覺特徵（CLIP）並以 DTW 做時間序列對齊。場景偵測優先採用 PySceneDetect（可選 TransNet）。對齊預設逐幀取樣，並已預設啟用邊界精修（幀級），DTW 視窗預設為 60（約 2 秒）。
 
 - 主要指令：`python -m recut.cli --ref 參照.mp4 --src 母帶.mp4 --out out --render`
+ - 自動遮罩字幕/水印：加上 `--auto-mask-text --east-model path/to/frozen_east_text_detection.pb`
+   - 啟用後在特徵抽取與邊界精修時自動偵測文字框並遮罩，減少疊加元素對匹配的干擾。
 - 匯出 Premiere XML：在指令加上 `--export-xml --timeline-fps 30`，將生成 `out/recut_premiere.xml` 可直接在 Premiere 匯入
- - 合併段長模式：`--concat-duration {ref|none|actual}`
-   - `ref`（預設）：以參照段長鎖定 ffconcat duration（總長鎖等於參照總長）
+ - 合併段長模式：`--concat-duration {ref|none|actual}`（預設 `actual`）
+   - `ref`：以參照段長鎖定 ffconcat duration（總長鎖等於參照總長）
    - `none`：不鎖定段長，使用各片段實際長度（避免邊界被強行拉長/縮短）
    - `actual`：以每段實際幀數/長度鎖定 duration（更穩定的鎖長）
 
@@ -130,52 +132,47 @@
 
 ---
 
-## Windows 加速與安裝指引（RTX 50xx 支援）
+## 編碼與安裝指引
 
-本專案僅支援硬體加速編解碼：
+預設編碼策略：
 
-- Windows：使用 `h264_nvenc`（NVENC + CUDA）
-- macOS：使用 `h264_videotoolbox`（VideoToolbox）
-- 其他平台目前不支援（將報錯）
-同時，CLIP 特徵在 GPU 上自動啟用半精度（AMP）與批次推理。
+- macOS：使用 `h264_videotoolbox`（VideoToolbox 硬體編碼，可搭配 `--vbitrate`）。
+- 其他平台（Windows/Linux）：使用軟體 `libx264`（以 `--crf` 與 `--preset` 控制品質/速度）。
+同時，特徵計算仍可自動使用可用的加速後端（如 MPS/CUDA），但輸出編碼不再依賴 NVENC。
 
 ### 必要條件（只需設定一次）
 
-1. 安裝 NVIDIA 顯示卡驅動（支援 RTX 50xx）。
-2. 安裝 CUDA 對應版 PyTorch（建議 CUDA 12.x）：
-   - 於 PowerShell（或 CMD）執行 PyTorch 官網提供的 pip 指令（例如 `cu121`）。
-   - 之後 `pip install transformers`。
-3. 安裝 ffmpeg 並加入 PATH（必須，且需包含對應硬體編碼器）：
-   - 方式 A（建議）：使用 winget：`winget install Gyan.FFmpeg` 或從 gyan.dev 下載 release zip，解壓後將 `bin` 資料夾加入 PATH。
-   - 驗證：在新開的 PowerShell 執行 `ffmpeg -hide_banner`，能顯示版本資訊即可。
+1. 安裝 ffmpeg 並加入 PATH（必要）。
+   - Windows：可用 winget `winget install Gyan.FFmpeg` 或至 gyan.dev 下載 release zip 後將 `bin` 加入 PATH。
+   - macOS：建議 Homebrew `brew install ffmpeg`。
+   - 驗證：在終端機執行 `ffmpeg -hide_banner` 應顯示版本資訊。
+2. 安裝 Python 依賴：`pip install -r requirements.txt`（可選安裝 PySceneDetect、transformers 以啟用進階功能）。
 
 ### 建議檢查
 
-- 檢查 PyTorch 是否啟用 CUDA：在 Python 互動殼執行 `import torch; print(torch.cuda.is_available())` 應為 `True`。
-- 檢查 ffmpeg NVENC/VTB 支援：
-  - Windows：`ffmpeg -encoders | findstr nvenc` 應列出 `h264_nvenc`。
-  - macOS：`ffmpeg -encoders | grep videotoolbox` 應列出 `h264_videotoolbox`。
+- macOS：`ffmpeg -encoders | grep videotoolbox` 可確認是否支援 `h264_videotoolbox`（可選）。
 
-### Windows 使用小叮嚀
+### 使用小叮嚀
 
-- 本專案僅允許硬體編碼：Windows=`h264_nvenc`，macOS=`h264_videotoolbox`。若選其他將報錯。
-- 若遇到「裁切速度慢」且 GPU 空轉，可確認：
-  - `ffmpeg` 版本是否含 NVENC；
-  - 顯卡驅動是否最新；
-  - 源檔是否使用了少見編碼導致回退軟解（可嘗試加 `--fast-copy` 快速裁切測試）。
-- 首次跑 CLIP 模型會下載權重，若在離線環境請事先在可連網機器下載後複製到 `~/.cache/huggingface/`（或設定 `HF_HOME`）。
+- 軟體編碼 `libx264`：建議 `--crf 18 --preset veryfast` 起手；畫質需求高可調低 CRF（如 16），速度優先可改 `--preset faster`。
+- macOS 若選 `h264_videotoolbox`：建議指定 `--vbitrate`（例如 `5M`）。
+- 首次跑 CLIP 可能下載權重；離線環境可預先將權重放到快取（如 `~/.cache/huggingface/`）。
 
-### 你需要手動做的一次性步驟（Windows）
+#### 常見問題
 
-- 安裝 GPU 版 PyTorch（對應 CUDA 版本）與 transformers。
-- 安裝 ffmpeg 並確保 PATH 正確。
-- 更新 NVIDIA 驅動至支援你的 RTX 50xx 的最新版本。
+- 若輸出速度較慢屬正常（軟體編碼）；可調整 `--preset` 更快，或降低輸出解析度做測試。
+- 合併時若看到 DTS 警告，改用預設「重編音訊」的合併（不要勾選 GUI 的「完全 copy」），可改善時間戳穩定性。
 
 完成以上後，直接使用：
 
 `python -m recut.cli --ref ref.mp4 --src src.mp4 --out out --render`
 
 或 GUI：`python -m recut.ui_tk`
+
+【重要更新】合成流程已改為「單次精準裁切＋精準合併」
+- 渲染現在採用單一 ffmpeg 濾鏡流程（select + setpts），一次完成所有片段的幀級裁切與合併；只輸出視訊，音訊直接移除。
+- GUI 的「快速裁切」與「合併時完全 copy」已停用；CLI 即使提供相關旗標也不會採用非精準路徑。
+- 這比逐段重編碼＋再 concat 更快且更穩定，總長、邊界皆精準（以幀為單位）。
 
 ### 進階：TransNet V2 場景偵測（可選）
 

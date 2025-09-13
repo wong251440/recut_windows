@@ -11,21 +11,36 @@ import numpy as np
 from tqdm import tqdm
 
 from .dtw import best_alignment_offset, cdist
-from .features import FeatureConfig, extract_sequence_features, sample_times, video_duration, video_fps
-from .ffmpeg_utils import cut_segment, concat_segments, ensure_dir, write_concat_file
+from .features import (
+    FeatureConfig,
+    extract_sequence_features,
+    sample_times,
+    video_duration,
+    video_fps,
+    load_frame_idx,
+)
+from .ffmpeg_utils import (
+    cut_segment,
+    cut_segment_frames,
+    concat_segments,
+    ensure_dir,
+    write_concat_file,
+    render_segments_single_pass,
+)
 from .scene_detect import Shot, detect_shots_auto
 
 
 @dataclass
 class PipelineConfig:
-    sample_step: float = 0.2  # seconds (default tuned for tight jump cuts)
+    sample_step: float = 0.0  # seconds; 0 表示逐幀取樣（1/min(fps)）
     feature_method: str = "clip"  # 僅允許 clip
     east_model_path: Optional[str] = None
+    auto_mask_text: bool = False
     search_margin: float = 30.0  # seconds around last match
     dtw_window: int | None = None
-    sc_threshold: float | None = 18.0  # for scene detector（PySceneDetect / TransNet 門檻）
+    sc_threshold: float | None = 0.5  # 預設給 TransNet；PySceneDetect 時可調大（如 18）
     min_scene_len: float = 0.10  # seconds, to capture dense jump cuts
-    sc_detector: str = "pyscenedetect"  # pyscenedetect | transnet
+    sc_detector: str = "transnet"  # transnet | pyscenedetect
     # 非順序對齊（全域搜尋）
     global_search: bool = True
     topk_candidates: int = 12
@@ -155,8 +170,12 @@ def align(
     except Exception:
         pass
 
+    # 決定取樣步長（逐幀或固定秒數）
+    eff_step = float(cfg.sample_step) if (cfg.sample_step and cfg.sample_step > 0) else (
+        1.0 / max(1.0, min(video_fps(reference_video), video_fps(source_video)))
+    )
     # Precompute source sequence features at uniform grid（支援快取）
-    src_times = list(np.arange(0, max(1e-6, src_dur), cfg.sample_step).astype(float))
+    src_times = list(np.arange(0, max(1e-6, src_dur), eff_step).astype(float))
     cache_path = _source_cache_path(out_dir, source_video, cfg)
     src_feats: np.ndarray
     # 進度回報器（每+5%列印一次）
@@ -184,7 +203,13 @@ def align(
             src_feats = extract_sequence_features(
                 source_video,
                 src_times,
-                FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor, batch_size=cfg.clip_batch_size),
+                FeatureConfig(
+                    method="clip",
+                    use_fast_processor=cfg.use_fast_processor,
+                    batch_size=cfg.clip_batch_size,
+                    east_model_path=cfg.east_model_path,
+                    auto_mask_text=cfg.auto_mask_text,
+                ),
                 on_progress=_src_prog,
             )
             if cfg.cache_source_features:
@@ -201,7 +226,13 @@ def align(
         src_feats = extract_sequence_features(
             source_video,
             src_times,
-            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor, batch_size=cfg.clip_batch_size),
+            FeatureConfig(
+                method="clip",
+                use_fast_processor=cfg.use_fast_processor,
+                batch_size=cfg.clip_batch_size,
+                east_model_path=cfg.east_model_path,
+                auto_mask_text=cfg.auto_mask_text,
+            ),
             on_progress=_src_prog,
         )
         if cfg.cache_source_features:
@@ -231,7 +262,7 @@ def align(
                 start_shot_index = len(prev["matches"])
                 if start_shot_index > 0:
                     last_end_t = float(prev["matches"][-1].get("src_end", 0.0))
-                    last_end_idx = max(0, int(last_end_t / cfg.sample_step))
+                    last_end_idx = max(0, int(last_end_t / eff_step))
                 if log:
                     log(f"偵測到續跑狀態，將從鏡頭 {start_shot_index+1} 繼續…")
         except Exception:
@@ -242,11 +273,17 @@ def align(
     for idx, s in enumerate(shots[start_shot_index:], start=start_shot_index + 1):
         if log:
             log(f"對齊鏡頭 {idx}/{total}: {s.start:.2f}-{s.end:.2f}s")
-        ref_times = sample_times(ref_dur, s.start, s.end, cfg.sample_step)
+        ref_times = sample_times(ref_dur, s.start, s.end, eff_step)
         ref_feats = extract_sequence_features(
             reference_video,
             ref_times,
-            FeatureConfig(method="clip", use_fast_processor=cfg.use_fast_processor, batch_size=cfg.clip_batch_size),
+            FeatureConfig(
+                method="clip",
+                use_fast_processor=cfg.use_fast_processor,
+                batch_size=cfg.clip_batch_size,
+                east_model_path=cfg.east_model_path,
+                auto_mask_text=cfg.auto_mask_text,
+            ),
         )
 
         if cfg.global_search:
@@ -264,7 +301,7 @@ def align(
                 log(f"  候選中心 {len(cand)}，anchors={len(anchor_idx)}, topk={cfg.topk_candidates}")
             best_cost = float('inf')
             best_off = 0
-            win = max(1, int(cfg.candidate_window / cfg.sample_step))
+            win = max(1, int(cfg.candidate_window / eff_step))
             for c in cand:
                 s_from = max(0, c - win)
                 s_to = min(len(src_times) - 1, c + win)
@@ -274,9 +311,9 @@ def align(
             off, cost = best_off, best_cost
         else:
             # 單調往前：使用上一段附近的搜尋窗
-            margin_idx = int(cfg.search_margin / cfg.sample_step)
+            margin_idx = int(cfg.search_margin / eff_step)
             start_idx = max(0, last_end_idx - margin_idx)
-            end_idx = min(len(src_times) - 1, last_end_idx + margin_idx + int((s.end - s.start) / cfg.sample_step) + 1)
+            end_idx = min(len(src_times) - 1, last_end_idx + margin_idx + int((s.end - s.start) / eff_step) + 1)
             off, cost = best_alignment_offset(ref_feats, src_feats, start_idx, end_idx, window=cfg.dtw_window)
         match_start_t = src_times[off]
         # 為了與參照段長完全一致，結束點直接以參照段長決定
@@ -292,7 +329,7 @@ def align(
             }
         )
         if not cfg.global_search:
-            last_end_idx = off + max(1, int((s.end - s.start) / cfg.sample_step))
+            last_end_idx = off + max(1, int((s.end - s.start) / eff_step))
         if log:
             log(f"  選定 idx={off}, cost={cost:.4f}, 時間 {match_start_t:.2f}-{match_end_t:.2f}s")
         if progress:
@@ -312,6 +349,8 @@ def align(
             window=cfg.refine_window,
             method="clip",
             use_fast=cfg.use_fast_processor,
+            east_model_path=cfg.east_model_path,
+            auto_mask_text=cfg.auto_mask_text,
             log=log,
         )
         result["matches"] = refined
@@ -332,51 +371,74 @@ def _refine_boundaries(
     window: float = 0.5,
     method: str = "clip",
     use_fast: bool = True,
+    east_model_path: Optional[str] = None,
+    auto_mask_text: bool = False,
     log: Optional[callable] = None,
 ) -> List[Dict]:
-    # Compare single frames around boundaries using chosen feature metric
-    fps_ref = max(30.0, video_fps(ref_video))
-    fps_src = max(30.0, video_fps(src_video))
-    step = 1.0 / max(30.0, min(fps_ref, fps_src))  # ~1/30s granularity
+    # Frame-accurate refinement at both boundaries
+    fps_ref = max(1.0, video_fps(ref_video))
+    fps_src = max(1.0, video_fps(src_video))
     if method != "clip":
         raise RuntimeError("Boundary refinement only supports 'clip' features.")
-    ref_extractor_cfg = FeatureConfig(method="clip", use_fast_processor=use_fast)
-    src_extractor_cfg = FeatureConfig(method="clip", use_fast_processor=use_fast)
 
-    def best_offset(t_ref: float, t_src0: float) -> float:
-        # Sample candidate times around t_src0 and pick min cosine distance
-        from .features import load_frame_at, build_extractor
+    def best_offset_frame(ref_idx: int, src_idx0: int) -> int:
+        from .features import build_extractor, load_frame_idx
         import numpy as np
+        from .masking import apply_mask, detect_text_boxes
         extractor = build_extractor("clip", use_fast)
-        ref_frame = load_frame_at(ref_video, max(0.0, t_ref))
+        ref_frame = load_frame_idx(ref_video, max(0, int(ref_idx)))
         if ref_frame is None:
-            return t_src0
+            return src_idx0
+        # optional masking on ref frame
+        if auto_mask_text and east_model_path:
+            try:
+                boxes = detect_text_boxes(ref_frame, east_model_path)
+                if boxes:
+                    ref_frame = apply_mask(ref_frame, boxes)
+            except Exception:
+                pass
         ref_vec = extractor(ref_frame).astype(np.float32)
-        # Candidates
-        times = np.arange(t_src0 - window, t_src0 + window + 1e-6, step, dtype=np.float32)
-        best_t, best_d = t_src0, float("inf")
-        for ts in times:
-            src_frame = load_frame_at(src_video, float(max(0.0, ts)))
+        win = max(0, int(round(window * fps_src)))
+        s_i = max(0, int(src_idx0 - win))
+        e_i = int(src_idx0 + win)
+        best_i, best_d = src_idx0, float("inf")
+        for i in range(s_i, e_i + 1):
+            src_frame = load_frame_idx(src_video, i)
             if src_frame is None:
                 continue
+            if auto_mask_text and east_model_path:
+                try:
+                    boxes_s = detect_text_boxes(src_frame, east_model_path)
+                    if boxes_s:
+                        src_frame = apply_mask(src_frame, boxes_s)
+                except Exception:
+                    pass
             vec = extractor(src_frame).astype(np.float32)
-            # cosine distance
             a = ref_vec / (np.linalg.norm(ref_vec) + 1e-8)
             b = vec / (np.linalg.norm(vec) + 1e-8)
             d = float(1.0 - float(a @ b))
             if d < best_d:
-                best_d, best_t = d, float(ts)
-        return best_t
+                best_d, best_i = d, i
+        return best_i
 
     refined: List[Dict] = []
     for i, m in enumerate(matches, start=1):
         rs, re = float(m.get("ref_start", 0.0)), float(m.get("ref_end", 0.0))
         ss0, se0 = float(m.get("src_start", 0.0)), float(m.get("src_end", 0.0))
+        ref_start_idx = int(round(rs * fps_ref))
+        ref_end_idx = int(round(re * fps_ref))
+        src_start_idx0 = int(round(ss0 * fps_src))
         # refine start against ref_start frame
-        ss = best_offset(rs + 1e-3, ss0)
-        # maintain reference duration for end
-        ref_len = max(0.0, re - rs)
-        se = ss + ref_len
+        src_start_idx = best_offset_frame(ref_start_idx, src_start_idx0)
+        # refine end against ref_end frame; fall back to duration mapping if missing
+        if se0 <= ss0:
+            se0 = ss0 + max(0.0, (re - rs))
+        src_end_idx0 = int(round(se0 * fps_src))
+        src_end_idx = best_offset_frame(ref_end_idx, max(src_end_idx0, src_start_idx))
+        if src_end_idx <= src_start_idx:
+            src_end_idx = src_start_idx + max(1, int(round((re - rs) * fps_src)))
+        ss = float(src_start_idx / fps_src)
+        se = float(src_end_idx / fps_src)
         nm = dict(m)
         nm["src_start"], nm["src_end"] = float(ss), float(se)
         refined.append(nm)
@@ -399,59 +461,40 @@ def render_from_alignment(
     abitrate: str = "192k",
     force_ref_durations: bool = True,
     stabilize_audio: bool = True,
-    concat_duration_mode: str = "ref",  # ref | none | actual
+    concat_duration_mode: str = "actual",  # ref | none | actual
+    gpu: Optional[int] = None,
 ) -> Path:
+    """
+    New rendering path: precise frame-accurate single-pass video-only export.
+    - Always precise (ignores fast-copy)
+    - Drops audio entirely
+    - Performs cut+concat in one ffmpeg pass using select over frame indices
+    """
     ensure_dir(out_dir)
-    tmp_dir = out_dir / "segments"
-    ensure_dir(tmp_dir)
-    out_files: List[Path] = []
-    durations: List[float] = []
-    # 若啟用，強制每段長度與參照一致（避免舊 alignment 內的 src_end 造成總長漂移）
-    for i, m in enumerate(alignment.get("matches", []), start=1):
-        out_file = tmp_dir / f"seg_{i:04d}.mp4"
-        src_start = float(m["src_start"]) if "src_start" in m else 0.0
-        if force_ref_durations and "ref_start" in m and "ref_end" in m:
+    final_out = out_dir / "recut_output.mp4"
+    # Build frame ranges from alignment
+    ranges: List[Tuple[int, int]] = []
+    for m in alignment.get("matches", []):
+        ss0 = float(m.get("src_start", 0.0))
+        se0 = float(m.get("src_end", 0.0))
+        if force_ref_durations and ("ref_start" in m and "ref_end" in m):
             ref_len = max(0.0, float(m["ref_end"]) - float(m["ref_start"]))
-            src_end = src_start + ref_len
-        else:
-            src_end = float(m.get("src_end", src_start))
-        if src_end <= src_start:
+            se0 = ss0 + ref_len
+        if se0 <= ss0:
             continue
-        cut_segment(
+        fps_src = max(1.0, video_fps(source_video))
+        sf = int(round(ss0 * fps_src))
+        ef = int(round(se0 * fps_src))
+        if ef > sf:
+            ranges.append((sf, ef))
+    if run:
+        render_segments_single_pass(
             source_video,
-            out_file,
-            src_start,
-            src_end,
-            accurate=accurate_cut,
+            final_out,
+            ranges,
             vcodec=vcodec,
             crf=crf,
             preset=preset,
             vbitrate=vbitrate,
-            abitrate=abitrate,
         )
-        out_files.append(out_file)
-        # 暫時記錄參照長度（若使用 ref 模式）；其他模式稍後覆寫
-        durations.append(max(0.0, src_end - src_start))
-
-    concat_txt = out_dir / "concat.txt"
-    # 根據合併長度模式決定是否與如何寫入 duration
-    if concat_duration_mode == "none":
-        write_concat_file(out_files, concat_txt, durations=None)
-    elif concat_duration_mode == "actual":
-        # 以實際輸出片段的幀數/長度計算 duration，避免與參照不一致造成段邊界偏移
-        actual: List[float] = []
-        for p in out_files:
-            try:
-                d = video_duration(p)
-            except Exception:
-                d = 0.0
-            actual.append(max(0.0, float(d)))
-        write_concat_file(out_files, concat_txt, durations=actual)
-    else:
-        # 預設 ref：沿用參照段長
-        write_concat_file(out_files, concat_txt, durations=durations)
-    final_out = out_dir / "recut_output.mp4"
-    if run:
-        total_ref = float(sum(durations)) if durations else None
-        concat_segments(concat_txt, final_out, total_duration=total_ref, stabilize_audio=stabilize_audio, abitrate=abitrate)
     return final_out

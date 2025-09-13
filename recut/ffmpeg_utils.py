@@ -12,6 +12,9 @@ def ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
+# NVENC 預檢已移除：改為預設軟編碼（libx264），僅保留 macOS VideoToolbox。
+
+
 def normalize_video(input_path: Path, output_path: Path, fps: float = 30.0, width: int | None = None, height: int | None = None) -> int:
     """
     Normalize fps and optionally resize to given width/height (keeping aspect if only one given).
@@ -40,6 +43,7 @@ def cut_segment(
     vbitrate: Optional[str] = None,
     acodec: str = "aac",
     abitrate: str = "192k",
+    gpu: Optional[int] = None,
 ) -> int:
     duration = max(0.0, end - start)
     sysname = platform.system().lower()
@@ -76,28 +80,30 @@ def cut_segment(
         "-muxdelay",
         "0",
     ]
-    # 強制要求硬體加速編解碼（Windows: NVENC/CUDA, macOS: VideoToolbox）
-    if is_windows and vcodec == "h264_nvenc":
-        cmd = ["-hwaccel", "cuda", *cmd]
-    elif is_macos and vcodec == "h264_videotoolbox":
+    # 視訊編碼策略：
+    # - macOS 且選擇 h264_videotoolbox：保留 VideoToolbox（可搭配 vbitrate）
+    # - 其他情況：使用軟體 libx264（CRF + preset），忽略 GPU 參數
+    if is_macos and vcodec == "h264_videotoolbox":
+        # 啟用 VideoToolbox 硬體路徑（僅 macOS）
         cmd = ["-hwaccel", "videotoolbox", *cmd]
+        cmd += ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p"]
+        if vbitrate:
+            cmd += ["-b:v", vbitrate]
     else:
-        raise RuntimeError(
-            f"Hardware video codec required. Use 'h264_nvenc' on Windows or 'h264_videotoolbox' on macOS. Got: {vcodec}"
-        )
-    # Video encode options
-    if vcodec in ("h264_videotoolbox", "h264_nvenc"):
+        # 軟體編碼（跨平台）：libx264
         cmd += [
             "-c:v",
-            vcodec,
+            "libx264",
+            "-preset",
+            str(preset),
+            "-crf",
+            str(int(crf)),
             "-pix_fmt",
             "yuv420p",
         ]
         if vbitrate:
+            # 若使用者仍提供位元率，則套用（可與 CRF 併用作上限）
             cmd += ["-b:v", vbitrate]
-    else:
-        # 不允許軟體編碼
-        raise RuntimeError("Software video encode is disabled; hardware codec required.")
     # Audio encode options
     cmd += [
         "-c:a",
@@ -106,6 +112,193 @@ def cut_segment(
         abitrate,
         str(out_file),
     ]
+    return run_ffmpeg(cmd)
+
+
+def cut_segment_frames(
+    src: Path,
+    out_file: Path,
+    start_frame: int,
+    end_frame: int,
+    *,
+    vcodec: str = "libx264",
+    crf: int = 18,
+    preset: str = "veryfast",
+    vbitrate: Optional[str] = None,
+    acodec: str = "aac",
+    abitrate: str = "192k",
+) -> int:
+    """
+    Frame-accurate cut using select/trim by frame index and matching audio trim by time.
+    end_frame is exclusive (i.e., cut frames [start_frame, end_frame)).
+    """
+    import math
+    from .features import video_fps
+    fps = float(video_fps(src))
+    sf = max(0, int(start_frame))
+    ef = max(sf, int(end_frame))
+    dur = max(0.0, (ef - sf) / fps if fps > 0 else 0.0)
+    # Video select by frame number; Audio trim by time to the same duration
+    vf = f"select='between(n,{sf},{ef-1})',setpts=PTS-STARTPTS"
+    af = f"atrim=start={sf/ fps if fps>0 else 0.0}:duration={dur},asetpts=PTS-STARTPTS"
+    cmd: List[str] = [
+        "-i", str(src),
+        "-filter_complex", f"[0:v]{vf}[v];[0:a]{af}[a]",
+        "-map", "[v]",
+        "-map", "[a]",
+    ]
+    sysname = platform.system().lower()
+    is_macos = sysname == "darwin"
+    if is_macos and vcodec == "h264_videotoolbox":
+        cmd += ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p"]
+        if vbitrate:
+            cmd += ["-b:v", vbitrate]
+    else:
+        cmd += [
+            "-c:v", "libx264",
+            "-preset", str(preset),
+            "-crf", str(int(crf)),
+            "-pix_fmt", "yuv420p",
+        ]
+        if vbitrate:
+            cmd += ["-b:v", vbitrate]
+    cmd += ["-c:a", acodec, "-b:a", abitrate, str(out_file)]
+    return run_ffmpeg(cmd)
+
+
+def render_segments_single_pass(
+    src: Path,
+    output_path: Path,
+    frame_ranges: List[Tuple[int, int]],
+    *,
+    vcodec: str = "libx264",
+    crf: int = 18,
+    preset: str = "veryfast",
+    vbitrate: Optional[str] = None,
+) -> int:
+    """
+    Single-pass precise render using trim+setpts+concat filtergraph (video only).
+    - Avoids concat demuxer timing quirks (inpoint/outpoint) on MP4/H.264.
+    - Ensures continuous PTS across segments; reduces dup/drop-induced freeze。
+    """
+    # Prepare segments
+    segs: List[Tuple[int, int]] = []
+    for s, e in frame_ranges:
+        s0 = max(0, int(s))
+        e0 = max(s0, int(e))
+        if e0 > s0:
+            segs.append((s0, e0))
+    if not segs:
+        return -1
+
+    # If segments are too many, process in batches to reduce filtergraph cost
+    BATCH_THRESHOLD = 120
+    CHUNK_SIZE = 80
+    if len(segs) > BATCH_THRESHOLD:
+        tmp_files: List[Path] = []
+        sysname = platform.system().lower()
+        is_macos = sysname == "darwin"
+        for gi in range(0, len(segs), CHUNK_SIZE):
+            chunk = segs[gi : gi + CHUNK_SIZE]
+            trim_lines: List[str] = []
+            seg_labels: List[str] = []
+            for i, (s0, e0) in enumerate(chunk):
+                lbl = f"v{i}"
+                trim_lines.append(
+                    f"[0:v]trim=start_frame={s0}:end_frame={e0},setpts=PTS-STARTPTS[{lbl}]"
+                )
+                seg_labels.append(f"[{lbl}]")
+            group_out = "g0"
+            filtergraph = ";".join(trim_lines + ["".join(seg_labels) + f"concat=n={len(seg_labels)}:v=1:a=0[{group_out}]"])
+            out_file = output_path.parent / f"_chunk_{gi//CHUNK_SIZE:04d}.mp4"
+            cmd: List[str] = [
+                "-i", str(src),
+                "-filter_complex", filtergraph,
+                "-map", f"[{group_out}]",
+                "-an",
+                "-fflags", "+genpts",
+                "-fps_mode", "passthrough",
+            ]
+            if is_macos and vcodec == "h264_videotoolbox":
+                cmd += ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p"]
+                if vbitrate:
+                    cmd += ["-b:v", vbitrate]
+            else:
+                cmd += [
+                    "-c:v", "libx264",
+                    "-preset", str(preset),
+                    "-crf", str(int(crf)),
+                    "-pix_fmt", "yuv420p",
+                ]
+                if vbitrate:
+                    cmd += ["-b:v", vbitrate]
+            cmd += [str(out_file)]
+            rc = run_ffmpeg(cmd)
+            if rc != 0:
+                return rc
+            tmp_files.append(out_file)
+        # Concat chunks by copy (video-only), continuous PTS generated
+        concat_txt = output_path.parent / "chunks_concat.txt"
+        write_concat_file(tmp_files, concat_txt, durations=None)
+        cmd2: List[str] = [
+            "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+            "-c", "copy", "-movflags", "+faststart",
+            str(output_path),
+        ]
+        return run_ffmpeg(cmd2)
+
+    # Build filtergraph with grouping (single-pass path)
+    trim_lines: List[str] = []
+    seg_labels: List[str] = []
+    for i, (s0, e0) in enumerate(segs):
+        lbl = f"v{i}"
+        trim_lines.append(
+            f"[0:v]trim=start_frame={s0}:end_frame={e0},setpts=PTS-STARTPTS[{lbl}]"
+        )
+        seg_labels.append(f"[{lbl}]")
+
+    group_size = 40
+    group_labels: List[str] = []
+    concat_lines: List[str] = []
+    for gi in range(0, len(seg_labels), group_size):
+        chunk = seg_labels[gi : gi + group_size]
+        out_lbl = f"g{gi//group_size}"
+        concat_lines.append("".join(chunk) + f"concat=n={len(chunk)}:v=1:a=0[{out_lbl}]")
+        group_labels.append(f"[{out_lbl}]")
+
+    final_label = "vout"
+    parts = trim_lines + concat_lines
+    if len(group_labels) > 1:
+        parts.append("".join(group_labels) + f"concat=n={len(group_labels)}:v=1:a=0[{final_label}]")
+        map_target = final_label
+    else:
+        map_target = group_labels[0].strip("[]")
+    filtergraph = ";".join(parts)
+
+    sysname = platform.system().lower()
+    is_macos = sysname == "darwin"
+    cmd: List[str] = [
+        "-i", str(src),
+        "-filter_complex", filtergraph,
+        "-map", f"[{map_target}]",
+        "-an",
+        "-fflags", "+genpts",
+        "-fps_mode", "passthrough",  # avoid CFR re-timing (no dup/drop)
+    ]
+    if is_macos and vcodec == "h264_videotoolbox":
+        cmd += ["-c:v", "h264_videotoolbox", "-pix_fmt", "yuv420p"]
+        if vbitrate:
+            cmd += ["-b:v", vbitrate]
+    else:
+        cmd += [
+            "-c:v", "libx264",
+            "-preset", str(preset),
+            "-crf", str(int(crf)),
+            "-pix_fmt", "yuv420p",
+        ]
+        if vbitrate:
+            cmd += ["-b:v", vbitrate]
+    cmd += [str(output_path)]
     return run_ffmpeg(cmd)
 
 
