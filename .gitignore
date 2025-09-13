@@ -10,6 +10,7 @@ __pycache__/
 
 # Outputs & caches
 out/
+out1/
 source/
 *.npz
 *.mp4
@@ -18,3 +19,6 @@ source/
 
 # Env
 .env
+
+# Large vendor weights (do not commit)
+vendor/TransNetV2/inference/transnetv2-weights/
